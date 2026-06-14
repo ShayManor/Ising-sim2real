@@ -2,8 +2,7 @@
 
 Benchmarks a panel of open surface-code decoders on real Google Willow hardware
 data and on synthetic circuit-level noise of rising fidelity, and measures whether
-the cheap synthetic benchmark predicts the real-hardware result. See
-[CLAUDE.md](CLAUDE.md) for the thesis, research questions, method, and guardrails.
+the cheap synthetic benchmark predicts the real-hardware result.
 
 ## Status
 
