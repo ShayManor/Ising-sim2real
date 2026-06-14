@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- Ising-sim2real ---
+# Vendored NVIDIA Ising-Decoding clone (pulled by scripts/setup_ising.py)
+third_party/
+# Model weights, Willow data, and experiment outputs
+models/
+data/
+outputs/
+# uv virtualenv
+.venv/
+# Working docs (only README.md is ever committed)
+docs/superpowers/
