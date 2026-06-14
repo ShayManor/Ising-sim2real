@@ -1,11 +1,10 @@
-"""Ingest pipeline (SCAFFOLD ONLY).
+"""Ingest pipeline for Google Willow hardware data.
 
-Loads Google Willow circuits + measurement records and derives detection events
-and observable flips. These modules define the interfaces the pipeline will fill
-in; the bodies raise NotImplementedError until step 1 of the method is built.
+Loads Willow circuits and pre-computed detection events, and derives detection
+events and observable flips ready for any decoder in the panel.
 
-Method order (see CLAUDE.md):
-    willow.py     -> load circuits and measurement records
-    detectors.py  -> measurement -> detector conversion via Stim
-    dataset.py    -> enumerate (distance, basis, orientation) configs
+Modules:
+    willow.py     — load circuits and pre-computed detection data from disk
+    detectors.py  — load_detection_data (b8 files) + measurements_to_detectors (m2d)
+    dataset.py    — discover and filter (distance, basis, orientation, rounds) configs
 """
