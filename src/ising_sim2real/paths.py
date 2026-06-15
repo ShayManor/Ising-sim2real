@@ -26,3 +26,9 @@ MODELS_DIR = REPO_ROOT / "models" / "ising"
 # Willow hardware data and experiment outputs (both gitignored).
 DATA_DIR = REPO_ROOT / "data"
 OUTPUTS_DIR = REPO_ROOT / "outputs"
+
+# The Google Willow below-threshold dataset, unpacked at the repo root
+# (Zenodo 10.5281/zenodo.13273331). Overridable for tests / alternate locations.
+WILLOW_RAW_DIR = Path(
+    os.environ.get("WILLOW_RAW_DIR", REPO_ROOT / "google_105Q_surface_code_d3_d5_d7")
+)
