@@ -8,7 +8,8 @@ dependencies = [
     "numpy",
     "scipy",
     "matplotlib",
-    # neural pre-decoder runtime (CPU wheel by default; see README for a CUDA build)
+    # neural pre-decoder runtime. macOS gets the default PyPI wheel (CPU/MPS);
+    # Linux (clusters) gets the CUDA 12.4 build via the index source below.
     "torch",
     # building/loading the vendored NVIDIA Ising model from config
     "omegaconf",
@@ -17,9 +18,16 @@ dependencies = [
     # ingest pipeline + MWPM baseline
     "stim",
     "pymatching",
-    # fallback weight download from Hugging Face
+    # eval harness progress bar
+    "tqdm",
+    # parquet read/write for the Hugging Face dataset (publish + --source hf)
+    "pyarrow",
+    # dataset download + weight fallback from Hugging Face
     "huggingface-hub",
 ]
+
+[project.scripts]
+ising-eval = "ising_sim2real.eval.runner:main"
 
 [project.optional-dependencies]
 # Extra decoders for the panel. Installed on demand, not part of the base env.
@@ -42,3 +50,16 @@ packages = ["src/ising_sim2real"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# Torch wheels: CUDA 12.4 build on Linux (GPU clusters), default PyPI wheel
+# (CPU/MPS) everywhere else. Change cu124 -> cu121/cu128 to match the cluster's
+# driver if needed.
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu124", marker = "sys_platform == 'linux'" },
+]
