@@ -74,15 +74,35 @@ print("dataset ready at", path)
 PY
 fi
 
+# --- progress tracking -------------------------------------------------------
+# TOTAL shards = (#distances * #bases) * (1 classical + #ising-models).
+nd=$(set -- $DISTANCES; echo $#); nb=$(set -- $BASES; echo $#); nm=$(set -- $MODELS; echo $#)
+TOTAL=$(( nd * nb * (1 + nm) ))
+DONE=0; RUN_N=0; RUN_T=0; WALL0=$(date +%s)
+fmt () { local s=$1; printf '%dh%02dm%02ds' $((s/3600)) $(((s%3600)/60)) $((s%60)); }
+
+eta () {  # print elapsed + ETA based on the mean time of shards that actually ran
+  local el=$(( $(date +%s) - WALL0 )) rem="?"
+  [ "$RUN_N" -gt 0 ] && rem=$(fmt $(( (RUN_T / RUN_N) * (TOTAL - DONE) )))
+  echo "    progress $DONE/$TOTAL shards | elapsed $(fmt $el) | est. remaining $rem"
+}
+
 echo "repo=$REPO outdir=$OUTDIR device=$DEVICE shots=${SHOTS:-all} models='$MODELS'"
 echo "source=$SOURCE hf_repo=$HF_REPO hf_home=$HF_HOME threads=$OMP_NUM_THREADS"
+echo "plan: $TOTAL shards = ${nd}d x ${nb}b x (1 classical + ${nm} ising); per-config bar streams to the .err log"
 
 run_shard () {  # $1=out.csv  $2..=ising-eval args
   local out="$1"; shift
-  if [ -s "$out" ]; then echo "skip (exists): $out"; return; fi
-  echo ">>> $out"
+  DONE=$(( DONE + 1 ))
+  if [ -s "$out" ]; then echo "[$(date +%H:%M:%S)] [$DONE/$TOTAL] skip (done): $(basename "$out")"; eta; return; fi
+  echo "[$(date +%H:%M:%S)] [$DONE/$TOTAL] start:     $(basename "$out")"
+  local t0; t0=$(date +%s)
   uv run ising-eval --source "$SOURCE" --hf-repo "$HF_REPO" \
     --device "$DEVICE" "${shots_flag[@]}" --out "$out" "$@"
+  local dt=$(( $(date +%s) - t0 ))
+  RUN_N=$(( RUN_N + 1 )); RUN_T=$(( RUN_T + dt ))
+  echo "[$(date +%H:%M:%S)] [$DONE/$TOTAL] finished:  $(basename "$out") in $(fmt $dt)"
+  eta
 }
 
 # --- pass 1: classical baselines + ising models, sharded by (distance, basis) ---
@@ -106,3 +126,4 @@ for f in "$OUTDIR"/classical_*.csv "$OUTDIR"/ising_*.csv; do
   if [ "$first" = 1 ]; then cat "$f" > "$merged"; first=0; else tail -n +2 "$f" >> "$merged"; fi
 done
 echo "merged $(($(wc -l < "$merged") - 1)) rows -> $merged"
+echo "[$(date +%H:%M:%S)] ALL DONE: $DONE/$TOTAL shards in $(fmt $(( $(date +%s) - WALL0 )))"
