@@ -19,6 +19,10 @@ set -euo pipefail
 #   data     : pulled from the HF dataset (SOURCE=hf) -- detection events,
 #              circuits, and shipped DEMs -- so NO 12 GB local Willow tree is
 #              needed. Set SOURCE=local to read a local tree instead.
+#   speed    : (distance, basis) groups run in parallel, one pinned per GPU
+#              (CUDA_VISIBLE_DEVICES), so both L40S are used. A device preflight
+#              prints use_gpu/gpus up front -- no silent CPU fallback eating the
+#              wall clock. --device cuda hard-fails if no GPU is visible.
 #
 # Timeout-safe: work is sharded by (distance, basis) and each shard writes its own
 # CSV the moment it finishes, so a 12h wall never loses completed shards. Re-submit
@@ -29,7 +33,7 @@ set -euo pipefail
 # =============================================================================
 
 # --- knobs (env-overridable) -------------------------------------------------
-REPO="${SLURM_SUBMIT_DIR:-$PWD}"                             # repo root (submit from here)
+REPO="${SLURM_SUBMIT_DIR:-$PWD}"                            # repo root (submit from here)
 OUTDIR="${OUTDIR:-/scratch/gautschi/manors/ising_eval}"     # results land here (NOT in git)
 SHOTS="${SHOTS:-}"                                           # empty = all 50k; set e.g. 5000 for a quick pass
 MODELS="${MODELS:-fast accurate}"                           # ising model variants to sweep
@@ -74,47 +78,53 @@ print("dataset ready at", path)
 PY
 fi
 
-# --- progress tracking -------------------------------------------------------
-# TOTAL shards = (#distances * #bases) * (1 classical + #ising-models).
-nd=$(set -- $DISTANCES; echo $#); nb=$(set -- $BASES; echo $#); nm=$(set -- $MODELS; echo $#)
-TOTAL=$(( nd * nb * (1 + nm) ))
-DONE=0; RUN_N=0; RUN_T=0; WALL0=$(date +%s)
+WALL0=$(date +%s)
 fmt () { local s=$1; printf '%dh%02dm%02ds' $((s/3600)) $(((s%3600)/60)) $((s%60)); }
 
-eta () {  # print elapsed + ETA based on the mean time of shards that actually ran
-  local el=$(( $(date +%s) - WALL0 )) rem="?"
-  [ "$RUN_N" -gt 0 ] && rem=$(fmt $(( (RUN_T / RUN_N) * (TOTAL - DONE) )))
-  echo "    progress $DONE/$TOTAL shards | elapsed $(fmt $el) | est. remaining $rem"
-}
+# --- device preflight: confirm what we'll actually run on (no silent CPU fall) ---
+GPU_COUNT=$(uv run python -c "import torch; print(torch.cuda.device_count())" 2>/dev/null || echo 0)
+case "$DEVICE" in
+  cpu) USE_GPU=0 ;;
+  *)   # auto / cuda*
+    if [ "${GPU_COUNT:-0}" -gt 0 ]; then USE_GPU=1
+    elif [ "$DEVICE" = auto ]; then echo "WARNING: no CUDA visible -> running on CPU"; USE_GPU=0
+    else echo "ERROR: --device '$DEVICE' but torch sees 0 CUDA devices"; exit 1; fi ;;
+esac
+WORKERS=$([ "$USE_GPU" = 1 ] && echo "$GPU_COUNT" || echo 1)   # one group per GPU, else serial
 
-echo "repo=$REPO outdir=$OUTDIR device=$DEVICE shots=${SHOTS:-all} models='$MODELS'"
-echo "source=$SOURCE hf_repo=$HF_REPO hf_home=$HF_HOME threads=$OMP_NUM_THREADS"
-echo "plan: $TOTAL shards = ${nd}d x ${nb}b x (1 classical + ${nm} ising); per-config bar streams to the .err log"
+echo "device=$DEVICE use_gpu=$USE_GPU gpus=$GPU_COUNT workers=$WORKERS source=$SOURCE shots=${SHOTS:-all} models='$MODELS'"
+echo "plan: ${nd:=$(set -- $DISTANCES; echo $#)}d x ${nb:=$(set -- $BASES; echo $#)}b groups; per-config bar streams to the .err log"
 
-run_shard () {  # $1=out.csv  $2..=ising-eval args
-  local out="$1"; shift
-  DONE=$(( DONE + 1 ))
-  if [ -s "$out" ]; then echo "[$(date +%H:%M:%S)] [$DONE/$TOTAL] skip (done): $(basename "$out")"; eta; return; fi
-  echo "[$(date +%H:%M:%S)] [$DONE/$TOTAL] start:     $(basename "$out")"
+run_shard () {  # $1=device $2=tag $3=out.csv  $4..=ising-eval args
+  local dev="$1" tag="$2" out="$3"; shift 3
+  if [ -s "$out" ]; then echo "[$(date +%H:%M:%S)] [$tag] skip (done): $(basename "$out")"; return; fi
   local t0; t0=$(date +%s)
+  echo "[$(date +%H:%M:%S)] [$tag] start:    $(basename "$out")"
   uv run ising-eval --source "$SOURCE" --hf-repo "$HF_REPO" \
-    --device "$DEVICE" "${shots_flag[@]}" --out "$out" "$@"
-  local dt=$(( $(date +%s) - t0 ))
-  RUN_N=$(( RUN_N + 1 )); RUN_T=$(( RUN_T + dt ))
-  echo "[$(date +%H:%M:%S)] [$DONE/$TOTAL] finished:  $(basename "$out") in $(fmt $dt)"
-  eta
+    --device "$dev" "${shots_flag[@]}" --out "$out" "$@"
+  echo "[$(date +%H:%M:%S)] [$tag] finished: $(basename "$out") in $(fmt $(( $(date +%s) - t0 )))"
 }
 
-# --- pass 1: classical baselines + ising models, sharded by (distance, basis) ---
-for d in $DISTANCES; do
-  for b in $BASES; do
-    run_shard "$OUTDIR/classical_d${d}_${b}.csv" \
-      --decoders mwpm,mwpm-rl --distances "$d" --bases "$b"
-    for m in $MODELS; do
-      run_shard "$OUTDIR/ising_${m}_d${d}_${b}.csv" \
-        --decoders ising --model "$m" --distances "$d" --bases "$b"
-    done
+run_group () {  # $1=distance $2=basis $3=gpu-slot -- classical + ising shards for one (d,b)
+  local d="$1" b="$2" slot="$3" dev tag g0; g0=$(date +%s)
+  if [ "$USE_GPU" = 1 ]; then export CUDA_VISIBLE_DEVICES="$slot"; dev=cuda; tag="gpu$slot d$d$b"; else dev="$DEVICE"; tag="cpu d$d$b"; fi
+  echo "[$(date +%H:%M:%S)] [$tag] group start"
+  run_shard "$dev" "$tag" "$OUTDIR/classical_d${d}_${b}.csv" --decoders mwpm,mwpm-rl --distances "$d" --bases "$b"
+  for m in $MODELS; do
+    run_shard "$dev" "$tag" "$OUTDIR/ising_${m}_d${d}_${b}.csv" --decoders ising --model "$m" --distances "$d" --bases "$b"
   done
+  echo "[$(date +%H:%M:%S)] [$tag] group DONE in $(fmt $(( $(date +%s) - g0 )))"
+}
+
+# --- run (distance, basis) groups in GPU-pinned waves (one group per GPU) -----
+groups=(); for d in $DISTANCES; do for b in $BASES; do groups+=("$d:$b"); done; done
+n=${#groups[@]}
+for (( s=0; s<n; s+=WORKERS )); do
+  for (( k=0; k<WORKERS && s+k<n; k++ )); do
+    IFS=: read -r gd gb <<< "${groups[s+k]}"
+    run_group "$gd" "$gb" "$k" &
+  done
+  wait   # barrier: finish this wave (and surface any failure) before the next
 done
 
 # --- merge every shard CSV into one results file (single header) -------------
@@ -126,4 +136,4 @@ for f in "$OUTDIR"/classical_*.csv "$OUTDIR"/ising_*.csv; do
   if [ "$first" = 1 ]; then cat "$f" > "$merged"; first=0; else tail -n +2 "$f" >> "$merged"; fi
 done
 echo "merged $(($(wc -l < "$merged") - 1)) rows -> $merged"
-echo "[$(date +%H:%M:%S)] ALL DONE: $DONE/$TOTAL shards in $(fmt $(( $(date +%s) - WALL0 )))"
+echo "[$(date +%H:%M:%S)] ALL DONE: $n groups in $(fmt $(( $(date +%s) - WALL0 )))"
