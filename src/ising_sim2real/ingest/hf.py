@@ -16,6 +16,7 @@ the configs a run touches are downloaded.
 from __future__ import annotations
 
 import gzip
+import re
 from dataclasses import dataclass
 
 import numpy as np
@@ -25,6 +26,39 @@ import stim
 from ising_sim2real.ingest.willow import WillowConfig
 
 DEFAULT_HF_REPO = "ShayManor/willow-surface-code-detection-events"
+
+# data/<stem>.parquet where <stem> == d{D}_at_{orientation}__{basis}__r{rounds:03d}
+_STEM_RE = re.compile(r"^d(\d+)_at_(.+)__([XZ])__r(\d+)$")
+
+
+def discover_configs_hf(repo: str = DEFAULT_HF_REPO) -> list[WillowConfig]:
+    """Enumerate configs from the HF dataset's parquet listing (no local tree).
+
+    The ``--source hf`` path must not touch the local Willow directory at all, so
+    config discovery comes from the repo file list rather than ``data_dir``.
+    """
+    from huggingface_hub import HfApi
+
+    configs: list[WillowConfig] = []
+    for f in HfApi().list_repo_files(repo, repo_type="dataset"):
+        if not (f.startswith("data/") and f.endswith(".parquet")):
+            continue
+        m = _STEM_RE.match(f[len("data/"):-len(".parquet")])
+        if m is None:
+            continue
+        configs.append(
+            WillowConfig(
+                distance=int(m.group(1)),
+                orientation=m.group(2),
+                basis=m.group(3),
+                rounds=int(m.group(4)),
+            )
+        )
+    if not configs:
+        raise FileNotFoundError(
+            f"No data/*.parquet shards found on {repo}; is the dataset published?"
+        )
+    return sorted(configs, key=lambda c: (c.distance, c.orientation, c.basis, c.rounds))
 
 
 @dataclass

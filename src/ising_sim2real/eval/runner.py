@@ -61,7 +61,12 @@ class EvalRow:
 
 
 def _select_configs(args) -> list[WillowConfig]:
-    configs = discover_configs(args.data_dir)
+    if args.source == "hf":
+        from ising_sim2real.ingest.hf import discover_configs_hf
+
+        configs = discover_configs_hf(args.hf_repo)
+    else:
+        configs = discover_configs(args.data_dir)
     if args.distances:
         configs = [c for c in configs if c.distance in args.distances]
     if args.bases:
