@@ -91,7 +91,11 @@ def resolve_checkpoint(spec: IsingModelSpec, checkpoint: Optional[Path] = None) 
             raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
         return ckpt
 
-    candidates = [MODELS_DIR / spec.filename, ISING_ROOT / "models" / spec.filename]
+    candidates = [
+        MODELS_DIR / spec.filename,                  # .pt from git-lfs (primary)
+        MODELS_DIR / f"{spec.name}.safetensors",      # fp16 safetensors (HF fallback)
+        ISING_ROOT / "models" / spec.filename,
+    ]
     for cand in candidates:
         if cand.exists():
             return cand

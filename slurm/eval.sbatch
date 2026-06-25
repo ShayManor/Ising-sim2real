@@ -29,7 +29,10 @@ set -euo pipefail
 # the same script to resume -- finished shards are skipped.
 #
 # Prereqs (run once on a login node, with internet):
-#   uv sync          # installs the cu124 torch build + deps into .venv
+#   uv sync                              # cu124 torch build + deps into .venv
+#   uv run python scripts/setup_ising.py # vendored NVIDIA Ising code + weights
+#                                        # (needs git-lfs; the sbatch retries this
+#                                        #  in-job but git-lfs may be login-only)
 # =============================================================================
 
 # --- knobs (env-overridable) -------------------------------------------------
@@ -76,6 +79,21 @@ from huggingface_hub import snapshot_download
 path = snapshot_download(sys.argv[1], repo_type="dataset", token=False)
 print("dataset ready at", path)
 PY
+fi
+
+# --- Ising decoder setup: vendored NVIDIA code + weights are gitignored, so a fresh
+# checkout has neither. The ising shards need both. Set up once if missing; the
+# NVIDIA HF weights are GATED, so this uses the git-lfs path (GitHub, public) and
+# fails fast with a login-node instruction rather than crashing every ising shard.
+have_ising_weights () { ls models/ising/*.pt >/dev/null 2>&1 || ls models/ising/*.safetensors >/dev/null 2>&1; }
+if [ -n "$MODELS" ] && { [ ! -d third_party/Ising-Decoding/code ] || ! have_ising_weights; }; then
+  echo "setting up vendored Ising decoder (scripts/setup_ising.py) ..."
+  if ! uv run python scripts/setup_ising.py; then
+    echo "ERROR: Ising setup failed (needs git-lfs + internet on this node)."
+    echo "Run it once on a LOGIN node and resubmit:  uv run python scripts/setup_ising.py"
+    echo "(or set MODELS='' to run the classical baselines only)"
+    exit 1
+  fi
 fi
 
 WALL0=$(date +%s)
