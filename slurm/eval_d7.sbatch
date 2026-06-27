@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=ising_eval
+#SBATCH --job-name=ising_eval_d7
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
@@ -41,10 +41,12 @@ OUTDIR="${OUTDIR:-/scratch/gautschi/manors/ising_eval}"     # results land here 
 SHOTS="${SHOTS:-}"                                           # empty = all 50k; set e.g. 5000 for a quick pass
 MODELS="${MODELS:-fast accurate}"                           # ising model variants to sweep
 DEVICE="${DEVICE:-auto}"                                     # auto -> CUDA (cu124 build on Linux), else CPU
-DISTANCES="${DISTANCES:-3 5 7}"
+DISTANCES="${DISTANCES:-7}"
 BASES="${BASES:-X Z}"
 SOURCE="${SOURCE:-auto}"                                     # auto = local Willow tree if present, else HF
 HF_REPO="${HF_REPO:-ShayManor/willow-surface-code-detection-events}"
+PUSH_RESULTS="${PUSH_RESULTS:-1}"                           # 1 = push CSVs to git after the run; 0 = off
+RESULTS_BRANCH="${RESULTS_BRANCH:-eval-results}"           # git branch the CSVs are pushed to
 WILLOW_RAW_DIR="${WILLOW_RAW_DIR:-$REPO/google_105Q_surface_code_d3_d5_d7}"
 export WILLOW_RAW_DIR
 
@@ -154,4 +156,11 @@ for f in "$OUTDIR"/classical_*.csv "$OUTDIR"/ising_*.csv; do
   if [ "$first" = 1 ]; then cat "$f" > "$merged"; first=0; else tail -n +2 "$f" >> "$merged"; fi
 done
 echo "merged $(($(wc -l < "$merged") - 1)) rows -> $merged"
+
+# --- push the CSVs to a git branch so they can be pulled elsewhere (non-fatal) ---
+# Opt out with PUSH_RESULTS=0. Pull locally: git fetch origin && git switch eval-results
+if [ "${PUSH_RESULTS:-1}" = 1 ]; then
+  bash scripts/push_results.sh "$REPO" "$OUTDIR" "${RESULTS_BRANCH:-eval-results}" || true
+fi
+
 echo "[$(date +%H:%M:%S)] ALL DONE: $n groups in $(fmt $(( $(date +%s) - WALL0 )))"
