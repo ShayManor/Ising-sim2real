@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=ising_eval_d7
+#SBATCH --job-name=ising_eval_d3
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
@@ -45,7 +45,7 @@ OUTDIR="${OUTDIR:-/scratch/gautschi/manors/ising_eval}"     # results land here 
 SHOTS="${SHOTS:-}"                                           # empty = all 50k; set e.g. 5000 for a quick pass
 MODELS="${MODELS:-fast accurate}"                           # ising model variants to sweep
 DEVICE="${DEVICE:-auto}"                                     # auto -> CUDA (cu124 build on Linux), else CPU
-DISTANCES="${DISTANCES:-7}"
+DISTANCES="${DISTANCES:-3}"
 BASES="${BASES:-X Z}"
 SOURCE="${SOURCE:-auto}"                                     # auto = local Willow tree if present, else HF
 HF_REPO="${HF_REPO:-ShayManor/willow-surface-code-detection-events}"
