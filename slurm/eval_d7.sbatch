@@ -50,7 +50,8 @@ BASES="${BASES:-X Z}"
 SOURCE="${SOURCE:-auto}"                                     # auto = local Willow tree if present, else HF
 HF_REPO="${HF_REPO:-ShayManor/willow-surface-code-detection-events}"
 PUSH_RESULTS="${PUSH_RESULTS:-1}"                           # 1 = push CSVs to git after the run; 0 = off
-RESULTS_BRANCH="${RESULTS_BRANCH:-eval-results}"           # git branch the CSVs are pushed to
+RESULTS_DIR="${RESULTS_DIR:-results}"                      # in-repo dir the CSVs are committed to
+RESUME="${RESUME:-0}"                                       # 0 = always re-run (default); 1 = skip shards whose CSV exists
 WILLOW_RAW_DIR="${WILLOW_RAW_DIR:-$REPO/google_105Q_surface_code_d3_d5_d7}"
 export WILLOW_RAW_DIR
 
@@ -121,7 +122,7 @@ echo "plan: ${nd:=$(set -- $DISTANCES; echo $#)}d x ${nb:=$(set -- $BASES; echo 
 
 run_shard () {  # $1=device $2=tag $3=out.csv  $4..=ising-eval args
   local dev="$1" tag="$2" out="$3"; shift 3
-  if [ -s "$out" ]; then echo "[$(date +%H:%M:%S)] [$tag] skip (done): $(basename "$out")"; return; fi
+  if [ "${RESUME:-0}" = 1 ] && [ -s "$out" ]; then echo "[$(date +%H:%M:%S)] [$tag] skip (resume): $(basename "$out")"; return; fi
   local t0; t0=$(date +%s)
   echo "[$(date +%H:%M:%S)] [$tag] start:    $(basename "$out")"
   uv run ising-eval --source "$SOURCE" --hf-repo "$HF_REPO" \
@@ -161,10 +162,11 @@ for f in "$OUTDIR"/classical_*.csv "$OUTDIR"/ising_*.csv; do
 done
 echo "merged $(($(wc -l < "$merged") - 1)) rows -> $merged"
 
-# --- push the CSVs to a git branch so they can be pulled elsewhere (non-fatal) ---
-# Opt out with PUSH_RESULTS=0. Pull locally: git fetch origin && git switch eval-results
+# --- commit + push the CSVs to the current branch so they can be pulled elsewhere ---
+# Opt out with PUSH_RESULTS=0. CSVs land in <repo>/results/ on the current branch;
+# pull locally with `git pull`. Non-fatal: a push hiccup never fails the eval job.
 if [ "${PUSH_RESULTS:-1}" = 1 ]; then
-  bash scripts/push_results.sh "$REPO" "$OUTDIR" "${RESULTS_BRANCH:-eval-results}" || true
+  bash scripts/push_results.sh "$REPO" "$OUTDIR" "${RESULTS_DIR:-results}" || true
 fi
 
 echo "[$(date +%H:%M:%S)] ALL DONE: $n groups in $(fmt $(( $(date +%s) - WALL0 )))"
