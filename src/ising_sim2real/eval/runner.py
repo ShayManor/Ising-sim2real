@@ -158,12 +158,21 @@ def evaluate(args) -> list[EvalRow]:
             else:
                 dec = IsingPreDecoder(model, data.circuit, cfg.basis, cfg.distance, cfg.rounds,
                                       device, rotation=args.rotation, syn_noise=args.syn_noise)
-                res = dec.decode_batch(dets)
-                ler, perc = _score(res.predictions, obs, cfg.rounds)
-                rows.append(EvalRow(cfg.distance, cfg.basis, cfg.orientation, cfg.rounds,
-                                    "ising", model_info.name, n, ler, perc, res.seconds,
-                                    note=f"R={model_info.receptive_field},rot={args.rotation}"))
-                postfix["ising/c"] = f"{perc:.4f}"
+                try:
+                    res = dec.decode_batch(dets)
+                except Exception as exc:  # noqa: BLE001 -- Willow->CSS order open (RQ4)
+                    # The residual matcher lives in the model's CSS MemoryCircuit
+                    # layout; mapping Willow's XZZX detectors into that order is the
+                    # open step-4 problem. Record it instead of crashing the shard.
+                    rows.append(EvalRow(cfg.distance, cfg.basis, cfg.orientation, cfg.rounds,
+                                        "ising", model_info.name, n, float("nan"), float("nan"),
+                                        0.0, note=f"ising-failed: {type(exc).__name__}"))
+                else:
+                    ler, perc = _score(res.predictions, obs, cfg.rounds)
+                    rows.append(EvalRow(cfg.distance, cfg.basis, cfg.orientation, cfg.rounds,
+                                        "ising", model_info.name, n, ler, perc, res.seconds,
+                                        note=f"R={model_info.receptive_field},rot={args.rotation}"))
+                    postfix["ising/c"] = f"{perc:.4f}"
 
         if postfix:
             bar.set_postfix(postfix)

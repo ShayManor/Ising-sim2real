@@ -67,22 +67,46 @@ def _eval_module_factory():
 
 
 @lru_cache(maxsize=None)
-def _residual_matcher(distance: int, rounds: int, basis: str, syn_noise: float) -> pymatching.Matching:
-    """PyMatching for the residual, from a noisy synthetic CSS circuit's DEM.
+def memory_circuit(distance: int, rounds: int, basis: str, rotation: str, syn_noise: float):
+    """NVIDIA's ``MemoryCircuit`` -- the circuit the model's residual is laid out for.
 
-    Cached per ``(distance, rounds, basis, syn_noise)`` because the same synthetic
+    The pre-decoder's residual detectors are in this circuit's native emission
+    order (``2 * T * half`` columns, ``[X-group, Z-group]`` per round, with
+    ``add_boundary_detectors=True``), NOT ``stim.Circuit.generated``'s order. The
+    residual matcher and any synthetic eval data MUST come from here or the
+    residual is matched on the wrong graph (verified: native decode beats MWPM at
+    d3/d5/d7; the generated-circuit graph lands at chance). Mirrors the reference
+    ``run_inference_and_decode_pre_decoder_memory`` (vendored).
+    """
+    _ensure_vendored_on_path()
+    from qec.surface_code.memory_circuit import MemoryCircuit  # type: ignore
+
+    mc = MemoryCircuit(
+        distance=distance,
+        idle_error=syn_noise,
+        sqgate_error=syn_noise,
+        tqgate_error=syn_noise,
+        spam_error=(2.0 / 3.0) * syn_noise,
+        n_rounds=rounds,
+        basis=basis,
+        code_rotation=rotation,
+        add_boundary_detectors=True,
+    )
+    mc.set_error_rates()
+    return mc
+
+
+@lru_cache(maxsize=None)
+def _residual_matcher(distance: int, rounds: int, basis: str, rotation: str, syn_noise: float) -> pymatching.Matching:
+    """PyMatching for the residual, from NVIDIA's ``MemoryCircuit`` DEM.
+
+    Cached per ``(distance, rounds, basis, rotation, syn_noise)`` because the same
     layout is shared by every patch orientation at that ``(d, basis, T)``.
     """
-    syn = stim.Circuit.generated(
-        f"surface_code:rotated_memory_{basis.lower()}",
-        distance=distance,
-        rounds=rounds,
-        after_clifford_depolarization=syn_noise,
-        before_measure_flip_probability=syn_noise,
-        after_reset_flip_probability=syn_noise,
-        before_round_data_depolarization=syn_noise,
+    mc = memory_circuit(distance, rounds, basis, rotation, syn_noise)
+    dem = mc.stim_circuit.detector_error_model(
+        decompose_errors=True, approximate_disjoint_errors=True
     )
-    dem = syn.detector_error_model(decompose_errors=True, approximate_disjoint_errors=True)
     return pymatching.Matching.from_detector_error_model(dem)
 
 
@@ -101,7 +125,7 @@ class IsingPreDecoder:
     def __init__(
         self,
         model: torch.nn.Module,
-        circuit: stim.Circuit,
+        circuit: stim.Circuit | None,
         basis: str,
         distance: int,
         rounds: int,
@@ -114,7 +138,14 @@ class IsingPreDecoder:
                 f"Ising residual transform needs rounds >= {self.MIN_ROUNDS}, got {rounds}"
             )
         self._device = device
-        self._layout = LatticeLayout.from_circuit(circuit, basis=basis, distance=distance, rotation=rotation)
+        # ``circuit is None`` => native mode: detectors are already in the model's
+        # MemoryCircuit emission order (synthetic data sampled from MemoryCircuit),
+        # so no reorder is applied. Otherwise reorder the data circuit's detectors.
+        self._layout = (
+            None
+            if circuit is None
+            else LatticeLayout.from_circuit(circuit, basis=basis, distance=distance, rotation=rotation)
+        )
 
         eval_module_cls, build_stab_maps = _eval_module_factory()
         cfg = OmegaConf.create(
@@ -133,7 +164,7 @@ class IsingPreDecoder:
             }
         )
         self._module = eval_module_cls(model, cfg, build_stab_maps(distance, rotation), device).to(device).eval()
-        self._matcher = _residual_matcher(distance, rounds, basis, float(syn_noise))
+        self._matcher = _residual_matcher(distance, rounds, basis, rotation, float(syn_noise))
         # Cap shots per forward so the (B, 4, T, D, D) tensor + conv activations stay
         # bounded: a single 50k-shot pass at d7/r250 is a ~10 GB input alone and OOMs
         # the GPU. Keep B*T*D*D under a fixed cell budget; clamp to [256, 16384].
@@ -144,7 +175,11 @@ class IsingPreDecoder:
     CELL_BUDGET = 30_000_000
 
     def decode_batch(self, detectors: np.ndarray) -> DecodeResult:
-        reordered = self._layout.reorder(detectors).astype(np.uint8)
+        reordered = (
+            np.ascontiguousarray(detectors)
+            if self._layout is None
+            else self._layout.reorder(detectors)
+        ).astype(np.uint8)
         start = time.perf_counter()
         pre_parts, res_parts = [], []
         with torch.no_grad():
