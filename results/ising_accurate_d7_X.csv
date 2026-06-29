@@ -1,16 +1,16 @@
 distance,basis,orientation,rounds,decoder,model,shots,ler,ler_per_cycle,decode_seconds,note
 7,X,q6_7,1,ising,accurate,50000,nan,nan,0.0,skipped: rounds<2
-7,X,q6_7,10,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
-7,X,q6_7,13,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
-7,X,q6_7,30,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
-7,X,q6_7,50,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
-7,X,q6_7,70,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
-7,X,q6_7,90,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
-7,X,q6_7,110,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
-7,X,q6_7,130,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
-7,X,q6_7,150,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
-7,X,q6_7,170,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
-7,X,q6_7,190,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
-7,X,q6_7,210,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
-7,X,q6_7,230,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
-7,X,q6_7,250,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
+7,X,q6_7,10,ising,accurate,50000,0.24842,0.03318950098573753,1.8532020130078308,"R=13,rot=XV"
+7,X,q6_7,13,ising,accurate,50000,0.27284,0.029441932057419573,2.1696831539738923,"R=13,rot=XV"
+7,X,q6_7,30,ising,accurate,50000,0.33362,0.018006655384645187,5.648810085025616,"R=13,rot=XV"
+7,X,q6_7,50,ising,accurate,50000,0.37578,0.013733406307388119,9.033663621987216,"R=13,rot=XV"
+7,X,q6_7,70,ising,accurate,50000,0.43474,0.014334985600439776,14.337200138019398,"R=13,rot=XV"
+7,X,q6_7,90,ising,accurate,50000,0.44634,0.012247179445871004,15.443796211038716,"R=13,rot=XV"
+7,X,q6_7,110,ising,accurate,50000,0.45554,0.010879963356563271,18.75392331898911,"R=13,rot=XV"
+7,X,q6_7,130,ising,accurate,50000,0.46946,0.010637409943195786,22.55747259699274,"R=13,rot=XV"
+7,X,q6_7,150,ising,accurate,50000,0.47854,0.010385351854991953,25.511462709051557,"R=13,rot=XV"
+7,X,q6_7,170,ising,accurate,50000,0.48698,0.010615460193500847,29.40763185999822,"R=13,rot=XV"
+7,X,q6_7,190,ising,accurate,50000,0.48744,0.009601588158721475,32.57279568898957,"R=13,rot=XV"
+7,X,q6_7,210,ising,accurate,50000,0.48478,0.008245534664583942,35.27494920103345,"R=13,rot=XV"
+7,X,q6_7,230,ising,accurate,50000,0.49764,0.0115088402478713,39.04452781396685,"R=13,rot=XV"
+7,X,q6_7,250,ising,accurate,50000,0.49262,0.008360973821763706,42.26578882901231,"R=13,rot=XV"

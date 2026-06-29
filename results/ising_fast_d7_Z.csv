@@ -1,16 +1,16 @@
 distance,basis,orientation,rounds,decoder,model,shots,ler,ler_per_cycle,decode_seconds,note
 7,Z,q6_7,1,ising,fast,50000,nan,nan,0.0,skipped: rounds<2
-7,Z,q6_7,10,ising,fast,50000,nan,nan,0.0,ising-failed: ValueError
-7,Z,q6_7,13,ising,fast,50000,nan,nan,0.0,ising-failed: ValueError
-7,Z,q6_7,30,ising,fast,50000,nan,nan,0.0,ising-failed: ValueError
-7,Z,q6_7,50,ising,fast,50000,nan,nan,0.0,ising-failed: ValueError
-7,Z,q6_7,70,ising,fast,50000,nan,nan,0.0,ising-failed: ValueError
-7,Z,q6_7,90,ising,fast,50000,nan,nan,0.0,ising-failed: ValueError
-7,Z,q6_7,110,ising,fast,50000,nan,nan,0.0,ising-failed: ValueError
-7,Z,q6_7,130,ising,fast,50000,nan,nan,0.0,ising-failed: ValueError
-7,Z,q6_7,150,ising,fast,50000,nan,nan,0.0,ising-failed: ValueError
-7,Z,q6_7,170,ising,fast,50000,nan,nan,0.0,ising-failed: ValueError
-7,Z,q6_7,190,ising,fast,50000,nan,nan,0.0,ising-failed: ValueError
-7,Z,q6_7,210,ising,fast,50000,nan,nan,0.0,ising-failed: ValueError
-7,Z,q6_7,230,ising,fast,50000,nan,nan,0.0,ising-failed: ValueError
-7,Z,q6_7,250,ising,fast,50000,nan,nan,0.0,ising-failed: ValueError
+7,Z,q6_7,10,ising,fast,50000,0.24586,0.032716650302735406,1.284315679979045,"R=9,rot=XV"
+7,Z,q6_7,13,ising,fast,50000,0.2593,0.02734158360913652,1.4250084680388682,"R=9,rot=XV"
+7,Z,q6_7,30,ising,fast,50000,0.33356,0.018000862508660953,3.907885605993215,"R=9,rot=XV"
+7,Z,q6_7,50,ising,fast,50000,0.36264,0.012754530235581485,6.02579132898245,"R=9,rot=XV"
+7,Z,q6_7,70,ising,fast,50000,0.41042,0.012132352312459516,9.088897606998216,"R=9,rot=XV"
+7,Z,q6_7,90,ising,fast,50000,0.4512,0.012761419828414666,10.290334941993933,"R=9,rot=XV"
+7,Z,q6_7,110,ising,fast,50000,0.45508,0.010834191935107151,12.37760663300287,"R=9,rot=XV"
+7,Z,q6_7,130,ising,fast,50000,0.46934,0.010622647632537174,14.897596097027417,"R=9,rot=XV"
+7,Z,q6_7,150,ising,fast,50000,0.4799,0.010599008707270152,17.1341899279505,"R=9,rot=XV"
+7,Z,q6_7,170,ising,fast,50000,0.48388,0.010000251102930069,19.7967090139864,"R=9,rot=XV"
+7,Z,q6_7,190,ising,fast,50000,0.49208,0.010790331553534205,22.11093513999367,"R=9,rot=XV"
+7,Z,q6_7,210,ising,fast,50000,0.49204,0.009761033059396629,23.68677501496859,"R=9,rot=XV"
+7,Z,q6_7,230,ising,fast,50000,0.49548,0.01012668786572185,26.24137315596454,"R=9,rot=XV"
+7,Z,q6_7,250,ising,fast,50000,0.49506,0.00914973238125627,28.31920802796958,"R=9,rot=XV"
