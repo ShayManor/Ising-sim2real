@@ -1,16 +1,16 @@
 distance,basis,orientation,rounds,decoder,model,shots,ler,ler_per_cycle,decode_seconds,note
 7,Z,q6_7,1,ising,accurate,50000,nan,nan,0.0,skipped: rounds<2
-7,Z,q6_7,10,ising,accurate,50000,0.50038,0.5,2.287062976974994,"R=13,rot=XV"
-7,Z,q6_7,13,ising,accurate,50000,0.50246,0.5,2.746572225994896,"R=13,rot=XV"
-7,Z,q6_7,30,ising,accurate,50000,0.5044,0.5,7.153459771012422,"R=13,rot=XV"
-7,Z,q6_7,50,ising,accurate,50000,0.49932,0.06183187365065046,11.617878821969498,"R=13,rot=XV"
-7,Z,q6_7,70,ising,accurate,50000,0.50176,0.5,17.880722952017095,"R=13,rot=XV"
-7,Z,q6_7,90,ising,accurate,50000,0.50226,0.5,20.54814702901058,"R=13,rot=XV"
-7,Z,q6_7,110,ising,accurate,50000,0.49856,0.025896051369648565,24.825852742011193,"R=13,rot=XV"
-7,Z,q6_7,130,ising,accurate,50000,0.49876,0.022550629629161822,29.778557791025378,"R=13,rot=XV"
-7,Z,q6_7,150,ising,accurate,50000,0.49918,0.020926336543931057,34.182012034987565,"R=13,rot=XV"
-7,Z,q6_7,170,ising,accurate,50000,0.50222,0.5,39.20825862500351,"R=13,rot=XV"
-7,Z,q6_7,190,ising,accurate,50000,0.50104,0.5,43.56921818200499,"R=13,rot=XV"
-7,Z,q6_7,210,ising,accurate,50000,0.49632,0.011558811136043234,47.522670674021356,"R=13,rot=XV"
-7,Z,q6_7,230,ising,accurate,50000,0.5008,0.5,52.34497290098807,"R=13,rot=XV"
-7,Z,q6_7,250,ising,accurate,50000,0.50344,0.5,56.55924616300035,"R=13,rot=XV"
+7,Z,q6_7,10,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
+7,Z,q6_7,13,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
+7,Z,q6_7,30,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
+7,Z,q6_7,50,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
+7,Z,q6_7,70,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
+7,Z,q6_7,90,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
+7,Z,q6_7,110,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
+7,Z,q6_7,130,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
+7,Z,q6_7,150,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
+7,Z,q6_7,170,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
+7,Z,q6_7,190,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
+7,Z,q6_7,210,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
+7,Z,q6_7,230,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
+7,Z,q6_7,250,ising,accurate,50000,nan,nan,0.0,ising-failed: ValueError
