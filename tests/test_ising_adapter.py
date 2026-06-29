@@ -1,10 +1,14 @@
 """Tests for the Willow -> Ising (4, T, D, D) lattice adapter.
 
-The adapter's correctness standard is NVIDIA's own ``dets_to_predecoder_inputs``:
-the public models were trained on exactly that transform, so a correct adapter
-must reproduce it bit-for-bit. We verify that on synthetic circuits (where the
-transform is the ground truth), then confirm a real Willow lattice has the right
-shape and is consumable by the pretrained model.
+The adapter reorders Willow *device* detection events into NVIDIA's CSS
+``MemoryCircuit`` contract layout: a 45-degree data-grid mapping, a square
+symmetry carrying Willow stabilizers onto NVIDIA's ``Hx``/``Hz`` rows, and the
+transform's timeline indices for the round dimension. We verify the
+correspondence is found and bijective, that the reorder is a clean scatter into
+the contract width, that placement is coordinate-driven (not emission-order
+driven), and that a real Willow lattice has the right shape and feeds the
+pretrained model. End-to-end decoding (Ising LER vs MWPM) lives in
+``test_ising_pipeline_e2e``.
 """
 
 from __future__ import annotations
@@ -25,97 +29,50 @@ if not ISING_CODE.exists():
 
 from ising_sim2real.ising.adapter import (  # noqa: E402
     LatticeLayout,
+    _stab_row_maps,
     detection_events_to_lattice,
 )
 
 
-def _nvidia_transform():
-    import sys
-
-    if str(ISING_CODE) not in sys.path:
-        sys.path.insert(0, str(ISING_CODE))
-    from data.predecoder_transform import dets_to_predecoder_inputs  # type: ignore
-
-    return dets_to_predecoder_inputs
-
-
-def _synthetic(distance: int, rounds: int, basis: str):
-    import stim
-
-    code = f"surface_code:rotated_memory_{basis.lower()}"
-    return stim.Circuit.generated(
-        code,
-        distance=distance,
-        rounds=rounds,
-        after_clifford_depolarization=0.02,
-        before_measure_flip_probability=0.01,
-    )
+def _willow_events(willow_dir: Path, cfg: WillowConfig):
+    run = load_run(willow_dir, cfg)
+    det = measurements_to_detectors(run.circuit, run.measurements, sweep_bits=run.sweep_bits)
+    return run.circuit, det.detectors
 
 
 @pytest.mark.parametrize(
-    "distance,rounds,basis",
-    [(3, 2, "Z"), (3, 4, "Z"), (5, 3, "Z"), (3, 5, "X"), (5, 4, "X"), (7, 3, "Z")],
+    "distance,orientation,basis",
+    [(3, "q4_5", "Z"), (3, "q4_5", "X"), (5, "q6_5", "Z"), (7, "q6_7", "Z")],
 )
-def test_matches_nvidia_transform_bit_for_bit(distance, rounds, basis) -> None:
-    """On a synthetic circuit our lattice == NVIDIA's dets_to_predecoder_inputs."""
-    circuit = _synthetic(distance, rounds, basis)
-    det = circuit.compile_detector_sampler().sample(shots=512).astype(np.uint8)
+def test_stab_row_maps_are_bijections(willow_dir, distance, orientation, basis) -> None:
+    """The square-symmetry search finds a bijective Willow-ancilla -> NVIDIA-row map."""
+    cfg = WillowConfig(distance, basis, 10, orientation)
+    circuit, _ = _willow_events(willow_dir, cfg)
+    half = (distance * distance - 1) // 2
+    xmap, zmap = _stab_row_maps(circuit, distance, basis, "XV")
+    assert sorted(xmap.values()) == list(range(half))
+    assert sorted(zmap.values()) == list(range(half))
 
-    reference, _, _ = _nvidia_transform()(
-        torch.as_tensor(det, dtype=torch.int64),
-        distance=distance,
-        n_rounds=rounds,
-        basis=basis,
-    )
+
+@pytest.mark.parametrize(
+    "distance,rounds,orientation,basis",
+    [(3, 10, "q4_5", "Z"), (3, 13, "q4_5", "X"), (7, 10, "q6_7", "Z")],
+)
+def test_reorder_is_a_clean_scatter(willow_dir, distance, rounds, orientation, basis) -> None:
+    """reorder scatters device detectors into the contract width with no collisions."""
+    cfg = WillowConfig(distance, basis, rounds, orientation)
+    circuit, detectors = _willow_events(willow_dir, cfg)
     layout = LatticeLayout.from_circuit(circuit, basis=basis, distance=distance)
-    mine = detection_events_to_lattice(det, layout)
 
-    assert mine.shape == reference.shape == (512, 4, rounds, distance, distance)
-    assert torch.equal(mine, reference.to(torch.float32))
+    half = (distance * distance - 1) // 2
+    assert layout.contract_width == 2 * rounds * half
+    assert len(set(layout.src.tolist())) == len(layout.src)  # each device det used once
+    assert len(set(layout.dst.tolist())) == len(layout.dst)  # no contract collisions
+    assert int(layout.src.max()) < layout.num_detectors
+    assert int(layout.dst.max()) < layout.contract_width
 
-
-def test_recovers_lattice_from_scrambled_detector_order() -> None:
-    """A circuit whose detectors are permuted still yields the canonical lattice.
-
-    Proves the placement is driven by detector coordinates, not by accidental
-    emission order -- the property that lets it absorb Willow's ordering.
-    """
-    distance, rounds, basis = 5, 4, "Z"
-    circuit = _synthetic(distance, rounds, basis)
-    det = circuit.compile_detector_sampler().sample(shots=256).astype(np.uint8)
-    canonical = detection_events_to_lattice(
-        det, LatticeLayout.from_circuit(circuit, basis=basis, distance=distance)
-    )
-
-    # Rebuild only what the adapter reads -- detector coordinates -- in a
-    # permuted order, then check the lattice is unchanged.
-    import stim
-
-    rng = np.random.default_rng(7)
-    perm = rng.permutation(circuit.num_detectors)
-    coords = circuit.get_detector_coordinates()
-    builder = stim.Circuit()
-    for new_idx in range(circuit.num_detectors):
-        builder.append("DETECTOR", [], coords[int(perm[new_idx])])
-    shuffled_layout = LatticeLayout.from_circuit(builder, basis=basis, distance=distance)
-
-    det_shuffled = det[:, perm]
-    recovered = detection_events_to_lattice(det_shuffled, shuffled_layout)
-    assert torch.equal(recovered, canonical)
-
-
-def test_reorder_is_a_permutation() -> None:
-    circuit = _synthetic(3, 6, "Z")
-    layout = LatticeLayout.from_circuit(circuit, basis="Z", distance=3)
-    assert sorted(layout.to_nvidia.tolist()) == list(range(layout.num_detectors))
-
-
-def _willow_events(willow_dir: Path, cfg: WillowConfig):
-    run = load_run(willow_dir, cfg)
-    det = measurements_to_detectors(
-        run.circuit, run.measurements, sweep_bits=run.sweep_bits
-    )
-    return run.circuit, det.detectors
+    out = layout.reorder(detectors[:8])
+    assert out.shape == (8, layout.contract_width)
 
 
 @pytest.mark.parametrize(
