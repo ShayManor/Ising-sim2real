@@ -2,8 +2,8 @@
 #SBATCH --job-name=ising_smoke
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
-#SBATCH --time=00:30:00
+#SBATCH --cpus-per-task=64
+#SBATCH --time=00:12:00
 #SBATCH -A lilly-rob1
 #SBATCH -p smallgpu
 #SBATCH --gres=gpu:1
