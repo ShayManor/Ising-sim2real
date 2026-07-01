@@ -18,8 +18,13 @@ set -euo pipefail
 # Why this exists: the Ising decode is correct on CPU/MPS (d3 LER ~0.13) but a
 # full CUDA run silently produced chance-level d3/d5 (~0.42/0.50) while d7 stayed
 # correct -- a CUDA-only execution bug that a full sweep does not catch until 6h
-# of compute later. This script decodes a few d3 configs on CPU AND (if present)
-# CUDA at low shots and FAILS LOUDLY if:
+# of compute later.
+#
+# IMPORTANT: the bug only shows at production scale. A 2000-shot probe does ONE
+# forward chunk and passes on CUDA (0.13, correct); the 50000-shot sweep chunks
+# the forward (chunk ~16384) and the multi-chunk CUDA path returns chance. So this
+# smoke MUST run full shots -- a low-shot probe is a false pass. It decodes a few
+# d3 configs on CPU AND (if present) CUDA at full shots and FAILS LOUDLY if:
 #   * the classical MWPM baseline is weak (data/ingest broken), or
 #   * Ising on CPU is at chance (model/adapter broken), or
 #   * Ising on CUDA disagrees with CPU (the device bug above).
@@ -34,8 +39,12 @@ while [ "$REPO" != "/" ] && [ ! -e "$REPO/pyproject.toml" ]; do REPO="$(dirname 
 [ -e "$REPO/pyproject.toml" ] || { echo "ERROR: repo root (pyproject.toml) not found above ${SLURM_SUBMIT_DIR:-$PWD}; set REPO=/path/to/Ising-sim2real"; exit 1; }
 OUTDIR="${OUTDIR:-/scratch/gautschi/manors/ising_smoke}"   # smoke CSVs (NOT in git)
 MODEL="${MODEL:-fast}"                                       # ising variant to probe
-ROUNDS="${ROUNDS:-13}"                                       # single round count (fast)
-SHOTS="${SHOTS:-2000}"                                       # low shot count -> seconds per config
+ROUNDS="${ROUNDS:-13}"                                       # single round count (fast per config)
+# CPU LER is shot-invariant (~0.13 at 2k or 50k), so the CPU ground truth can be
+# cheap. The CUDA probe MUST be full shots: the bug lives in the chunked forward
+# (chunk ~16384), so a sub-chunk CUDA probe is a false pass.
+SHOTS_CPU="${SHOTS_CPU:-5000}"                               # cheap CPU ground truth
+SHOTS_CUDA="${SHOTS_CUDA:-50000}"                            # FULL shots -> forces the chunked CUDA path (the bug)
 LIMIT="${LIMIT:-4}"                                          # configs per shard (a few d3 patches)
 SOURCE="${SOURCE:-auto}"                                     # auto = local tree if present, else HF
 HF_REPO="${HF_REPO:-ShayManor/willow-surface-code-detection-events}"
@@ -77,14 +86,14 @@ fi
 
 # --- device preflight ---------------------------------------------------------
 GPU_COUNT=$(uv run python -c "import torch; print(torch.cuda.device_count())" 2>/dev/null || echo 0)
-echo "source=$SOURCE model=$MODEL rounds=$ROUNDS shots=$SHOTS limit=$LIMIT gpus=$GPU_COUNT"
+echo "source=$SOURCE model=$MODEL rounds=$ROUNDS shots_cpu=$SHOTS_CPU shots_cuda=$SHOTS_CUDA limit=$LIMIT gpus=$GPU_COUNT"
 echo "thresholds: ising<$CHANCE_MAX  mwpm<$MWPM_MAX  |cuda-cpu|<$DRIFT_MAX"
 
-probe () {  # $1=device $2=out.csv $3=decoders [$4=model-flag...]
-  local dev="$1" out="$2"; shift 2
-  echo "[$(date +%H:%M:%S)] probe $dev -> $(basename "$out")"
+probe () {  # $1=device $2=shots $3=out.csv $4=decoders [$5=model-flag...]
+  local dev="$1" shots="$2" out="$3"; shift 3
+  echo "[$(date +%H:%M:%S)] probe $dev shots=$shots -> $(basename "$out")"
   uv run ising-eval --source "$SOURCE" --hf-repo "$HF_REPO" --device "$dev" \
-    --distances 3 --bases Z --rounds "$ROUNDS" --shots "$SHOTS" --limit "$LIMIT" \
+    --distances 3 --bases Z --rounds "$ROUNDS" --shots "$shots" --limit "$LIMIT" \
     --out "$out" "$@"
 }
 
@@ -92,10 +101,10 @@ CPU_ISING="$OUTDIR/smoke_ising_cpu.csv"
 CUDA_ISING="$OUTDIR/smoke_ising_cuda.csv"
 CPU_MWPM="$OUTDIR/smoke_mwpm_cpu.csv"
 
-probe cpu "$CPU_MWPM"  --decoders mwpm
-probe cpu "$CPU_ISING" --decoders ising --model "$MODEL"
+probe cpu "$SHOTS_CPU" "$CPU_MWPM"  --decoders mwpm
+probe cpu "$SHOTS_CPU" "$CPU_ISING" --decoders ising --model "$MODEL"
 if [ "${GPU_COUNT:-0}" -gt 0 ]; then
-  probe cuda "$CUDA_ISING" --decoders ising --model "$MODEL"
+  probe cuda "$SHOTS_CUDA" "$CUDA_ISING" --decoders ising --model "$MODEL"
 else
   echo "WARNING: no CUDA visible -> skipping the GPU vs CPU divergence check"
 fi
