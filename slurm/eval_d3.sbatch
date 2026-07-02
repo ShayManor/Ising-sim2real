@@ -2,11 +2,10 @@
 #SBATCH --job-name=ising_eval_d3
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=64
+#SBATCH --cpus-per-task=96
 #SBATCH --time=12:00:00
 #SBATCH -A lilly-rob1
-#SBATCH -p smallgpu
-#SBATCH --gres=gpu:1
+#SBATCH -p highmem
 #SBATCH -o /scratch/gautschi/manors/logs/ising%j.out
 #SBATCH -e /scratch/gautschi/manors/logs/ising%j.err
 set -euo pipefail
@@ -45,6 +44,17 @@ OUTDIR="${OUTDIR:-/scratch/gautschi/manors/ising_eval}"     # results land here 
 SHOTS="${SHOTS:-}"                                           # empty = all 50k; set e.g. 5000 for a quick pass
 MODELS="${MODELS:-fast accurate}"                           # ising model variants to sweep
 DEVICE="${DEVICE:-auto}"                                     # auto -> CUDA (cu124 build on Linux), else CPU
+ISING_DEVICE="${ISING_DEVICE:-cpu}"                          # Ising ALWAYS on CPU: the CUDA forward corrupts at
+                                                            # shard scale (correct in isolation, chance-level across
+                                                            # a full shard -- see slurm/smoke_test.slurm). Classical
+                                                            # (pymatching) is CPU regardless of DEVICE.
+# Ising round cap: the CPU forward cost grows ~linearly with rounds and a high-round
+# Ising total LER saturates to ~0.5 (per-cycle is the useful metric, best estimated
+# at low/moderate rounds), so capping keeps the signal while making the sweep fit in
+# 12h. Classical decoders are cheap (pymatching) and run at ALL rounds. Set empty to
+# run Ising at every round (much slower -- time it with slurm/smoke_test.slurm first).
+ISING_MAX_ROUNDS="${ISING_MAX_ROUNDS:-70}"
+NPAR="${NPAR:-4}"                                            # concurrent CPU Ising shards (cores split across them)
 DISTANCES="${DISTANCES:-3}"
 BASES="${BASES:-X Z}"
 SOURCE="${SOURCE:-auto}"                                     # auto = local Willow tree if present, else HF
@@ -130,26 +140,34 @@ run_shard () {  # $1=device $2=tag $3=out.csv  $4..=ising-eval args
   echo "[$(date +%H:%M:%S)] [$tag] finished: $(basename "$out") in $(fmt $(( $(date +%s) - t0 )))"
 }
 
-run_group () {  # $1=distance $2=basis $3=gpu-slot -- classical + ising shards for one (d,b)
-  local d="$1" b="$2" slot="$3" dev tag g0; g0=$(date +%s)
-  if [ "$USE_GPU" = 1 ]; then export CUDA_VISIBLE_DEVICES="$slot"; dev=cuda; tag="gpu$slot d$d$b"; else dev="$DEVICE"; tag="cpu d$d$b"; fi
-  echo "[$(date +%H:%M:%S)] [$tag] group start"
-  run_shard "$dev" "$tag" "$OUTDIR/classical_d${d}_${b}.csv" --decoders mwpm,mwpm-rl --distances "$d" --bases "$b"
-  for m in $MODELS; do
-    run_shard "$dev" "$tag" "$OUTDIR/ising_${m}_d${d}_${b}.csv" --decoders ising --model "$m" --distances "$d" --bases "$b"
-  done
-  echo "[$(date +%H:%M:%S)] [$tag] group DONE in $(fmt $(( $(date +%s) - g0 )))"
+# --- classical shards (pymatching, CPU, fast): all rounds, run serially --------
+for d in $DISTANCES; do for b in $BASES; do
+  run_shard "$DEVICE" "cls d$d$b" "$OUTDIR/classical_d${d}_${b}.csv" --decoders mwpm,mwpm-rl --distances "$d" --bases "$b"
+done; done
+
+# --- ising shards (CPU): run NPAR at once, each capped to CORES/NPAR threads ----
+# One torch process per (distance,basis,model). Running NPAR concurrently with a
+# per-process thread cap keeps all cores busy without oversubscription -- the lever
+# that fits the sweep in the wall clock. Ising rounds are capped by ISING_MAX_ROUNDS.
+CORES="${SLURM_CPUS_PER_TASK:-96}"
+ising_jobs=(); for d in $DISTANCES; do for b in $BASES; do for m in $MODELS; do ising_jobs+=("$d:$b:$m"); done; done; done
+njobs=${#ising_jobs[@]}
+[ "$NPAR" -gt "$njobs" ] && NPAR="$njobs"; [ "${NPAR:-0}" -lt 1 ] && NPAR=1
+ITHREADS=$(( CORES / NPAR )); [ "$ITHREADS" -lt 1 ] && ITHREADS=1
+mr_flag=(); [ -n "$ISING_MAX_ROUNDS" ] && mr_flag=(--max-rounds "$ISING_MAX_ROUNDS")
+echo "ising: $njobs shards, $NPAR concurrent x $ITHREADS threads on $CORES cores; max-rounds=${ISING_MAX_ROUNDS:-all}"
+
+ising_shard () {  # $1="d:b:m" -- subshell so OMP_NUM_THREADS is per-shard
+  local d b m; IFS=: read -r d b m <<< "$1"
+  export OMP_NUM_THREADS="$ITHREADS" MKL_NUM_THREADS="$ITHREADS"
+  run_shard "$ISING_DEVICE" "isg d$d$b/$m" "$OUTDIR/ising_${m}_d${d}_${b}.csv" \
+    --decoders ising --model "$m" --distances "$d" --bases "$b" "${mr_flag[@]}"
 }
 
-# --- run (distance, basis) groups in GPU-pinned waves (one group per GPU) -----
-groups=(); for d in $DISTANCES; do for b in $BASES; do groups+=("$d:$b"); done; done
-n=${#groups[@]}
-for (( s=0; s<n; s+=WORKERS )); do
-  for (( k=0; k<WORKERS && s+k<n; k++ )); do
-    IFS=: read -r gd gb <<< "${groups[s+k]}"
-    run_group "$gd" "$gb" "$k" &
-  done
-  wait   # barrier: finish this wave (and surface any failure) before the next
+# Launch in waves of NPAR (portable across bash versions; no `wait -n` needed).
+for (( i=0; i<njobs; i+=NPAR )); do
+  for (( k=0; k<NPAR && i+k<njobs; k++ )); do ising_shard "${ising_jobs[i+k]}" & done
+  wait   # barrier: finish this wave before the next
 done
 
 # --- merge every shard CSV into one results file (single header) -------------
@@ -169,4 +187,4 @@ if [ "${PUSH_RESULTS:-1}" = 1 ]; then
   bash scripts/push_results.sh "$REPO" "$OUTDIR" "${RESULTS_DIR:-results}" || true
 fi
 
-echo "[$(date +%H:%M:%S)] ALL DONE: $n groups in $(fmt $(( $(date +%s) - WALL0 )))"
+echo "[$(date +%H:%M:%S)] ALL DONE: ${njobs:-0} ising shards in $(fmt $(( $(date +%s) - WALL0 )))"
