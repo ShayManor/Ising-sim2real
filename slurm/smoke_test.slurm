@@ -2,33 +2,28 @@
 #SBATCH --job-name=ising_smoke
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=64
-#SBATCH --time=12:00:00
+#SBATCH --cpus-per-task=96
+#SBATCH --time=00:30:00
 #SBATCH -A lilly-rob1
-#SBATCH -p smallgpu
-#SBATCH --gres=gpu:1
+#SBATCH -p highmem
 #SBATCH -o /scratch/gautschi/manors/logs/smoke%j.out
 #SBATCH -e /scratch/gautschi/manors/logs/smoke%j.err
 set -euo pipefail
 
 # =============================================================================
-# Fail-fast device sanity gate for the Ising pre-decoder. Run this BEFORE a full
-# eval_d{3,5,7} sweep.
+# CPU correctness + runtime-projection gate. Run this BEFORE eval_d3/eval_d7.
 #
-# Why this exists: the Ising decode is correct on CPU/MPS (d3 LER ~0.13) but a
-# full CUDA run silently produced chance-level d3/d5 (~0.42/0.50) while d7 stayed
-# correct -- a CUDA-only execution bug that a full sweep does not catch until 6h
-# of compute later.
-#
-# IMPORTANT: the bug only shows at production scale. A 2000-shot probe does ONE
-# forward chunk and passes on CUDA (0.13, correct); the 50000-shot sweep chunks
-# the forward (chunk ~16384) and the multi-chunk CUDA path returns chance. So this
-# smoke MUST run full shots -- a low-shot probe is a false pass. It decodes a few
-# d3 configs on CPU AND (if present) CUDA at full shots and FAILS LOUDLY if:
-#   * the classical MWPM baseline is weak (data/ingest broken), or
-#   * Ising on CPU is at chance (model/adapter broken), or
-#   * Ising on CUDA disagrees with CPU (the device bug above).
-# Exit 0 = safe to launch the full sweep; exit 1 = do NOT trust a GPU sweep.
+# Ising runs on CPU (the CUDA forward corrupts at shard scale: correct in
+# isolation, chance-level across a full 135-config shard -- a state accumulation
+# no cheap probe reproduces, so we don't chase it, we avoid it). This gate
+# certifies the path we actually use:
+#   1. classical MWPM decodes            -> data/ingest OK
+#   2. Ising on CPU is below chance      -> model/adapter OK
+#   3. the full d3 Ising sweep FITS the wall clock -- measured, not guessed: time
+#      ONE heavy config at the real per-shard thread budget (CORES/NPAR) and
+#      project the whole sweep. This is the check a fast correctness-only smoke
+#      was missing.
+# Exit 0 = safe to launch the sweep; exit 1 = do NOT (reason printed).
 #
 # Prereqs (once, on a login node): uv sync; uv run python scripts/setup_ising.py
 # =============================================================================
@@ -39,36 +34,28 @@ while [ "$REPO" != "/" ] && [ ! -e "$REPO/pyproject.toml" ]; do REPO="$(dirname 
 [ -e "$REPO/pyproject.toml" ] || { echo "ERROR: repo root (pyproject.toml) not found above ${SLURM_SUBMIT_DIR:-$PWD}; set REPO=/path/to/Ising-sim2real"; exit 1; }
 OUTDIR="${OUTDIR:-/scratch/gautschi/manors/ising_smoke}"   # smoke CSVs (NOT in git)
 MODEL="${MODEL:-fast}"                                       # ising variant to probe
-ROUNDS="${ROUNDS:-13}"                                       # single round count (fast per config)
-# CPU LER is shot-invariant (~0.13 at 2k or 50k), so the CPU ground truth can be
-# cheap. The CUDA probe MUST be full shots: the bug lives in the chunked forward
-# (chunk ~16384), so a sub-chunk CUDA probe is a false pass.
-SHOTS_CPU="${SHOTS_CPU:-5000}"                               # cheap CPU ground truth
-SHOTS_CUDA="${SHOTS_CUDA:-50000}"                            # FULL shots (matches production)
-LIMIT="${LIMIT:-4}"                                          # CPU-baseline configs (a few d3 patches, r13)
-# The CUDA bug is a state-accumulation across a long shard, NOT a single forward:
-# CUDA d3/r13 is correct in isolation (0.13) but chance in the full 135-config
-# shard. So the CUDA probe must run a SHARD-LIKE workload in ONE process -- low +
-# heavy rounds across several patches -- so the heavy configs can corrupt the
-# later light ones. We gate only the LOW_ROUND configs: a working Ising at high
-# rounds has total LER ~= 0.5 by construction, so only low rounds are chance-testable.
-ROUNDS_CUDA="${ROUNDS_CUDA:-13,250}"                         # light + heavy, interleaved by patch
-LIMIT_CUDA="${LIMIT_CUDA:-8}"                                # ~4 patches x {13,250} in one process
-LOW_ROUND="${LOW_ROUND:-13}"                                 # the chance-testable round
 SOURCE="${SOURCE:-auto}"                                     # auto = local tree if present, else HF
 HF_REPO="${HF_REPO:-ShayManor/willow-surface-code-detection-events}"
 WILLOW_RAW_DIR="${WILLOW_RAW_DIR:-$REPO/google_105Q_surface_code_d3_d5_d7}"
 export WILLOW_RAW_DIR
 
-# Pass/fail thresholds (override if your noise regime differs).
-CHANCE_MAX="${CHANCE_MAX:-0.35}"   # Ising must beat this (chance = 0.5) to count as decoding
+# Correctness probe (cheap; CPU LER is shot-invariant so 5k is plenty).
+CORR_SHOTS="${CORR_SHOTS:-5000}"
+CORR_ROUNDS="${CORR_ROUNDS:-13}"
+CORR_LIMIT="${CORR_LIMIT:-4}"
+CHANCE_MAX="${CHANCE_MAX:-0.35}"   # Ising must beat this (chance = 0.5)
 MWPM_MAX="${MWPM_MAX:-0.20}"       # classical baseline must be at least this strong
-DRIFT_MAX="${DRIFT_MAX:-0.08}"     # max allowed |CUDA - CPU| Ising LER divergence
 
-export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-32}"
-export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-32}"
+# Runtime projection -- MUST mirror the eval scripts' knobs to be meaningful.
+NPAR="${NPAR:-4}"                                   # concurrent ising shards in the eval
+ISING_MAX_ROUNDS="${ISING_MAX_ROUNDS:-70}"          # eval's round cap ('' = all rounds)
+PROBE_ROUNDS="${PROBE_ROUNDS:-${ISING_MAX_ROUNDS:-250}}"  # heaviest config the sweep runs
+TIME_BUDGET_H="${TIME_BUDGET_H:-11}"                # project under this (margin below 12h wall)
+SWEEP_PATCHES="${SWEEP_PATCHES:-9}"                 # d3 patch count (worst case of the two jobs)
+SWEEP_BASES="${SWEEP_BASES:-2}"                     # X,Z
+SWEEP_MODELS="${SWEEP_MODELS:-2}"                   # fast,accurate
+
 export HF_HOME="${HF_HOME:-$OUTDIR/hf_cache}"
-
 cd "$REPO"
 mkdir -p "$OUTDIR"
 
@@ -93,95 +80,118 @@ if [ ! -d third_party/Ising-Decoding/code ] || ! have_ising_weights; then
   uv run python scripts/setup_ising.py || { echo "ERROR: Ising setup failed (needs git-lfs + internet)."; exit 1; }
 fi
 
-# --- device preflight ---------------------------------------------------------
-GPU_COUNT=$(uv run python -c "import torch; print(torch.cuda.device_count())" 2>/dev/null || echo 0)
-echo "source=$SOURCE model=$MODEL shots_cpu=$SHOTS_CPU shots_cuda=$SHOTS_CUDA gpus=$GPU_COUNT"
-echo "cpu baseline: r$ROUNDS x$LIMIT   cuda probe: r$ROUNDS_CUDA x$LIMIT_CUDA (gate low round r$LOW_ROUND)"
-echo "thresholds: ising<$CHANCE_MAX  mwpm<$MWPM_MAX  |cuda-cpu|<$DRIFT_MAX"
+CORES="${SLURM_CPUS_PER_TASK:-96}"
+[ "$NPAR" -lt 1 ] && NPAR=1
+ITHREADS=$(( CORES / NPAR )); [ "$ITHREADS" -lt 1 ] && ITHREADS=1
+echo "source=$SOURCE model=$MODEL cores=$CORES npar=$NPAR ithreads=$ITHREADS max-rounds=${ISING_MAX_ROUNDS:-all}"
+echo "correctness: r$CORR_ROUNDS x$CORR_LIMIT @ ${CORR_SHOTS}sh   |   timing: 1x r$PROBE_ROUNDS @ 50k, $ITHREADS threads"
+echo "thresholds: ising<$CHANCE_MAX  mwpm<$MWPM_MAX  project<${TIME_BUDGET_H}h"
 
-probe () {  # $1=device $2=shots $3=rounds $4=limit $5=out.csv $6=decoders [$7=model-flag...]
-  local dev="$1" shots="$2" rounds="$3" limit="$4" out="$5"; shift 5
-  echo "[$(date +%H:%M:%S)] probe $dev shots=$shots rounds=$rounds -> $(basename "$out")"
-  uv run ising-eval --source "$SOURCE" --hf-repo "$HF_REPO" --device "$dev" \
-    --distances 3 --bases Z --rounds "$rounds" --shots "$shots" --limit "$limit" \
-    --out "$out" "$@"
-}
-
-CPU_ISING="$OUTDIR/smoke_ising_cpu.csv"
-CUDA_ISING="$OUTDIR/smoke_ising_cuda.csv"
 CPU_MWPM="$OUTDIR/smoke_mwpm_cpu.csv"
+CPU_ISING="$OUTDIR/smoke_ising_cpu.csv"
+TIMING_CSV="$OUTDIR/smoke_timing_cpu.csv"
 
-probe cpu "$SHOTS_CPU" "$ROUNDS" "$LIMIT" "$CPU_MWPM"  --decoders mwpm
-probe cpu "$SHOTS_CPU" "$ROUNDS" "$LIMIT" "$CPU_ISING" --decoders ising --model "$MODEL"
-if [ "${GPU_COUNT:-0}" -gt 0 ]; then
-  # ONE process, shard-like (light + heavy rounds across patches) so accumulation shows.
-  probe cuda "$SHOTS_CUDA" "$ROUNDS_CUDA" "$LIMIT_CUDA" "$CUDA_ISING" --decoders ising --model "$MODEL"
-else
-  echo "WARNING: no CUDA visible -> skipping the GPU vs CPU divergence check"
-fi
+# --- correctness probes (cheap) ----------------------------------------------
+echo "[$(date +%H:%M:%S)] correctness: mwpm"
+uv run ising-eval --source "$SOURCE" --hf-repo "$HF_REPO" --device cpu \
+  --distances 3 --bases Z --rounds "$CORR_ROUNDS" --shots "$CORR_SHOTS" --limit "$CORR_LIMIT" \
+  --decoders mwpm --out "$CPU_MWPM"
+echo "[$(date +%H:%M:%S)] correctness: ising"
+uv run ising-eval --source "$SOURCE" --hf-repo "$HF_REPO" --device cpu \
+  --distances 3 --bases Z --rounds "$CORR_ROUNDS" --shots "$CORR_SHOTS" --limit "$CORR_LIMIT" \
+  --decoders ising --model "$MODEL" --out "$CPU_ISING"
+
+# --- timing probe: ONE heavy config at the eval's per-shard thread budget -----
+echo "[$(date +%H:%M:%S)] timing: 1 cfg r$PROBE_ROUNDS @ 50k, $ITHREADS threads"
+OMP_NUM_THREADS="$ITHREADS" MKL_NUM_THREADS="$ITHREADS" \
+uv run ising-eval --source "$SOURCE" --hf-repo "$HF_REPO" --device cpu \
+  --distances 3 --bases Z --rounds "$PROBE_ROUNDS" --shots 50000 --limit 1 \
+  --decoders ising --model "$MODEL" --out "$TIMING_CSV"
 
 # --- evaluate the gate --------------------------------------------------------
 echo "----- smoke gate -----"
-GPU_COUNT="$GPU_COUNT" CHANCE_MAX="$CHANCE_MAX" MWPM_MAX="$MWPM_MAX" DRIFT_MAX="$DRIFT_MAX" LOW_ROUND="$LOW_ROUND" \
-CPU_ISING="$CPU_ISING" CUDA_ISING="$CUDA_ISING" CPU_MWPM="$CPU_MWPM" \
+CHANCE_MAX="$CHANCE_MAX" MWPM_MAX="$MWPM_MAX" CPU_MWPM="$CPU_MWPM" CPU_ISING="$CPU_ISING" \
+TIMING_CSV="$TIMING_CSV" PROBE_ROUNDS="$PROBE_ROUNDS" ISING_MAX_ROUNDS="$ISING_MAX_ROUNDS" \
+NPAR="$NPAR" TIME_BUDGET_H="$TIME_BUDGET_H" SWEEP_PATCHES="$SWEEP_PATCHES" \
+SWEEP_BASES="$SWEEP_BASES" SWEEP_MODELS="$SWEEP_MODELS" \
 uv run python - <<'PY'
 import csv, math, os, sys
 
-def lers(path, decoder, low_round_only=False, low_round=13):
-    """LER values for a decoder; optionally only rows at the chance-testable round."""
+# All round counts the sweep decodes (r01 is auto-skipped: Ising needs T>=2).
+ROUND_SET = [10, 13, 30, 50, 70, 90, 110, 130, 150, 170, 190, 210, 230, 250]
+
+def rows(path, decoder):
     if not path or not os.path.exists(path):
         return []
     out = []
     for r in csv.DictReader(open(path)):
-        if r["decoder"] != decoder:
+        if r["decoder"] != decoder or r["note"].startswith(("skipped", "ising-failed")):
             continue
-        if r["note"].startswith(("skipped", "ising-failed")):
-            continue
-        if low_round_only and int(r["rounds"]) != low_round:
-            continue
+        out.append(r)
+    return out
+
+def mean_ler(path, decoder):
+    vs = []
+    for r in rows(path, decoder):
         try:
             v = float(r["ler"])
         except ValueError:
             continue
         if not math.isnan(v):
-            out.append(v)
-    return out
-
-def mean(xs):
-    return sum(xs) / len(xs) if xs else None
+            vs.append(v)
+    return sum(vs) / len(vs) if vs else None
 
 chance = float(os.environ["CHANCE_MAX"]); mwpm_max = float(os.environ["MWPM_MAX"])
-drift_max = float(os.environ["DRIFT_MAX"]); have_gpu = int(os.environ["GPU_COUNT"]) > 0
-low_round = int(os.environ["LOW_ROUND"])
+mwpm = mean_ler(os.environ["CPU_MWPM"], "mwpm")
+cpu = mean_ler(os.environ["CPU_ISING"], "ising")
+print(f"  mwpm (cpu)   = {mwpm}")
+print(f"  ising (cpu)  = {cpu}")
 
-mwpm = mean(lers(os.environ["CPU_MWPM"], "mwpm"))
-cpu = mean(lers(os.environ["CPU_ISING"], "ising"))
-# Only the low-round CUDA configs are chance-testable; we take the WORST one so a
-# single accumulation-corrupted config (a late r13 after heavy r250s) trips the gate.
-cuda_low = lers(os.environ["CUDA_ISING"], "ising", low_round_only=True, low_round=low_round)
-cuda_worst = max(cuda_low) if cuda_low else None
-cuda_mean = mean(cuda_low)
+# --- runtime projection from the heavy timing config -------------------------
+probe_rounds = int(os.environ["PROBE_ROUNDS"])
+cap = os.environ["ISING_MAX_ROUNDS"].strip()
+cap = int(cap) if cap else None
+npar = max(1, int(os.environ["NPAR"]))
+budget_s = float(os.environ["TIME_BUDGET_H"]) * 3600
+patches = int(os.environ["SWEEP_PATCHES"])
+n_shards = int(os.environ["SWEEP_BASES"]) * int(os.environ["SWEEP_MODELS"])
 
-print(f"  mwpm (cpu)          = {mwpm}")
-print(f"  ising (cpu, r{low_round})     = {cpu}")
-print(f"  ising (cuda, r{low_round}) n={len(cuda_low)} mean={cuda_mean} worst={cuda_worst}")
+timing = rows(os.environ["TIMING_CSV"], "ising")
+probe_secs = None
+for r in timing:
+    if int(r["rounds"]) == probe_rounds:
+        try:
+            probe_secs = float(r["decode_seconds"])
+        except ValueError:
+            pass
+        break
+
+proj_h = None
+if probe_secs and probe_secs > 0:
+    per_round = probe_secs / probe_rounds                       # decode-sec per round at 50k, ITHREADS
+    sum_rounds = sum(r for r in ROUND_SET if cap is None or r <= cap)
+    waves = math.ceil(n_shards / npar)                          # shard groups run back-to-back
+    proj_s = patches * sum_rounds * per_round * waves           # wall-clock for the heaviest job (d3)
+    proj_h = proj_s / 3600
+    print(f"  timing: r{probe_rounds} 50k = {probe_secs:.1f}s ({per_round:.3f}s/round)")
+    print(f"  projected d3 Ising sweep: {patches} patches x sum_rounds({sum_rounds}) x {waves} wave(s) "
+          f"= {proj_h:.1f}h  (budget {budget_s/3600:.0f}h)")
 
 fail = []
 if mwpm is None or mwpm >= mwpm_max:
     fail.append(f"classical baseline weak/missing: mwpm={mwpm} (want <{mwpm_max}) -> data/ingest broken")
 if cpu is None or cpu >= chance:
     fail.append(f"Ising at chance on CPU: ising={cpu} (want <{chance}) -> model/adapter broken")
-if have_gpu:
-    if cuda_worst is None or cuda_worst >= chance:
-        fail.append(f"Ising at chance on CUDA (worst r{low_round}={cuda_worst}, want <{chance}) -> GPU path corrupts at shard scale; run the sweep on --device cpu")
-    elif cpu is not None and cuda_mean is not None and abs(cuda_mean - cpu) >= drift_max:
-        fail.append(f"CUDA disagrees with CPU: |{cuda_mean:.3f}-{cpu:.3f}|={abs(cuda_mean-cpu):.3f} (want <{drift_max}) -> run the sweep on --device cpu")
+if proj_h is None:
+    fail.append("timing probe produced no decode_seconds -> cannot project runtime")
+elif proj_h * 3600 >= budget_s:
+    fail.append(f"projected {proj_h:.1f}h exceeds {budget_s/3600:.0f}h -> lower ISING_MAX_ROUNDS or raise NPAR")
 
 if fail:
     print("SMOKE TEST FAILED:")
     for f in fail:
         print("  - " + f)
     sys.exit(1)
-print("SMOKE TEST PASSED: device path is sound; safe to launch the full sweep.")
+print("SMOKE TEST PASSED: CPU path correct and the sweep is projected to fit the wall clock.")
 PY
 echo "[$(date +%H:%M:%S)] smoke done"
