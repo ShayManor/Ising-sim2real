@@ -129,46 +129,90 @@ def _load_state_dict_from_pt(path: Path, device: torch.device) -> dict:
     }
 
 
-def load_ising_model(
-    name: str = "fast",
-    device: Optional[torch.device] = None,
-    checkpoint: Optional[Path] = None,
-) -> tuple[torch.nn.Module, IsingModelInfo]:
-    """Build the architecture from the registry and load pretrained weights.
+def _build_and_load(model_id: int, ckpt: Path, device: torch.device):
+    """Build a model architecture for ``model_id`` and load weights from ``ckpt``.
 
-    Args:
-        name: "fast" or "accurate".
-        device: target torch device (defaults to CPU).
-        checkpoint: explicit weights path; otherwise resolved from disk.
-
-    Returns:
-        (model in eval mode on ``device``, IsingModelInfo).
+    Returns ``(model, cfg)``; ``cfg`` is the vendored Hydra/OmegaConf config used
+    to build the architecture (callers read ``cfg.model.{input,out}_channels``).
     """
-    if name not in ISING_MODELS:
-        raise ValueError(f"Unknown model {name!r}; choose from {list(ISING_MODELS)}.")
-    spec = ISING_MODELS[name]
-    device = device or torch.device("cpu")
-
     _ensure_ising_on_path()
     # Imported after sys.path is patched; resolves inside the vendored repo.
     from export.safetensors_utils import _build_minimal_cfg  # type: ignore
     from model.factory import ModelFactory  # type: ignore
 
-    cfg = _build_minimal_cfg(spec.model_id)
+    cfg = _build_minimal_cfg(model_id)
     model = ModelFactory.create_model(cfg)
 
-    ckpt = resolve_checkpoint(spec, checkpoint)
     if ckpt.suffix == ".safetensors":
         # HF ships fp16 safetensors; the repo provides a loader that returns a
         # ready model. Use it directly rather than our state-dict path.
         from export.safetensors_utils import load_safetensors  # type: ignore
 
-        model, _meta = load_safetensors(str(ckpt), model_id=spec.model_id, device=str(device))
+        model, _meta = load_safetensors(str(ckpt), model_id=model_id, device=str(device))
     else:
         state_dict = _load_state_dict_from_pt(ckpt, device)
         model.load_state_dict(state_dict, strict=True)
 
     model.eval().to(device)
+    return model, cfg
+
+
+def load_ising_model(
+    name: str = "fast",
+    device: Optional[torch.device] = None,
+    checkpoint: Optional[Path] = None,
+    model_id: Optional[int] = None,
+) -> tuple[torch.nn.Module, IsingModelInfo]:
+    """Build the architecture from the registry and load pretrained weights.
+
+    Args:
+        name: "fast", "accurate", or "custom" (an arbitrary trained checkpoint).
+        device: target torch device (defaults to CPU).
+        checkpoint: explicit weights path; otherwise resolved from disk. Required
+            when ``name == "custom"``.
+        model_id: public model id (1-5) whose architecture the checkpoint was
+            trained with. Required when ``name == "custom"``; ignored otherwise
+            (the "fast"/"accurate" registry entries already carry their own
+            model_id). Needed for model-size ablations, where a trained
+            checkpoint may use an architecture other than 1 ("fast") or 4
+            ("accurate").
+
+    Returns:
+        (model in eval mode on ``device``, IsingModelInfo).
+    """
+    device = device or torch.device("cpu")
+
+    if name == "custom":
+        if model_id is None:
+            raise ValueError("name='custom' requires an explicit model_id (1-5).")
+        if checkpoint is None:
+            raise ValueError("name='custom' requires an explicit checkpoint path.")
+        ckpt = Path(checkpoint)
+        if not ckpt.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
+
+        _ensure_ising_on_path()
+        from model.registry import get_model_spec  # type: ignore
+
+        receptive_field = get_model_spec(model_id).receptive_field
+        model, cfg = _build_and_load(model_id, ckpt, device)
+        info = IsingModelInfo(
+            name="custom",
+            model_id=model_id,
+            receptive_field=receptive_field,
+            input_channels=int(cfg.model.input_channels),
+            out_channels=int(cfg.model.out_channels),
+            num_params=sum(p.numel() for p in model.parameters()),
+            checkpoint=ckpt,
+            device=device,
+        )
+        return model, info
+
+    if name not in ISING_MODELS:
+        raise ValueError(f"Unknown model {name!r}; choose from {list(ISING_MODELS) + ['custom']}.")
+    spec = ISING_MODELS[name]
+    ckpt = resolve_checkpoint(spec, checkpoint)
+    model, cfg = _build_and_load(spec.model_id, ckpt, device)
 
     info = IsingModelInfo(
         name=spec.name,

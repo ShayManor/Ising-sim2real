@@ -18,6 +18,7 @@ Run it (uv)
 -----------
     uv run ising-eval --distances 3 --bases Z --rounds 10,30 --shots 5000
     uv run ising-eval --decoders mwpm,ising --model fast --limit 8
+    uv run ising-eval --decoders ising --model custom --model-id 2 --checkpoint path/to/trained.pt
     uv run ising-eval                      # full panel, all 420 configs, all shots
 """
 
@@ -124,7 +125,9 @@ def evaluate(args) -> list[EvalRow]:
         from ising_sim2real.ising.loader import load_ising_model
         from ising_sim2real.ising.predecoder import IsingPreDecoder
 
-        model, model_info = load_ising_model(args.model, device=device)
+        model, model_info = load_ising_model(
+            args.model, device=device, checkpoint=args.checkpoint, model_id=args.model_id
+        )
 
     rows: list[EvalRow] = []
     bar = tqdm(configs, unit="cfg", dynamic_ncols=True, disable=args.no_progress)
@@ -201,8 +204,12 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--decoders", type=_str_list, default=list(ALL_DECODERS),
                    help=f"comma list from {ALL_DECODERS} (default: all)")
-    p.add_argument("--model", choices=("fast", "accurate"), default="fast",
-                   help="Ising model variant (default: fast)")
+    p.add_argument("--model", choices=("fast", "accurate", "custom"), default="fast",
+                   help="Ising model variant (default: fast). 'custom' needs --checkpoint and --model-id.")
+    p.add_argument("--checkpoint", type=Path, default=None,
+                   help="explicit weights path (overrides the default fast/accurate lookup)")
+    p.add_argument("--model-id", type=int, default=None,
+                   help="public model id 1-5 for the checkpoint's architecture (required with --model custom)")
     p.add_argument("--distances", type=_int_list, default=None, help="e.g. 3,5,7 (default: all)")
     p.add_argument("--bases", type=_str_list, default=None, help="X,Z (default: both)")
     p.add_argument("--rounds", type=_int_list, default=None, help="exact round counts, e.g. 10,30")
@@ -224,6 +231,8 @@ def main(argv: list[str] | None = None) -> int:
     bad = set(args.decoders) - set(ALL_DECODERS)
     if bad:
         p.error(f"unknown decoders {sorted(bad)}; choose from {ALL_DECODERS}")
+    if args.model == "custom" and (args.checkpoint is None or args.model_id is None):
+        p.error("--model custom requires both --checkpoint and --model-id")
 
     print(f"device: {describe_device(resolve_device(args.device))}  decoders: {args.decoders}", file=sys.stderr)
     rows = evaluate(args)
