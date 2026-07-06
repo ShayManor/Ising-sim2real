@@ -11,6 +11,29 @@ from __future__ import annotations
 import numpy as np
 
 
+def logical_error_outcomes(predicted: np.ndarray, actual: np.ndarray) -> np.ndarray:
+    """Per-shot logical-error indicator (True where any observable is mispredicted).
+
+    The raw per-shot ground truth the harness records so all downstream statistics
+    (LER, per-cycle LER, bootstrap confidence intervals, rank-agreement CIs) can be
+    recomputed locally without re-running a decode.
+
+    Args:
+        predicted: shape (shots, num_observables), bool-like.
+        actual: shape (shots, num_observables), bool-like.
+
+    Returns:
+        A ``(shots,)`` bool array: True on shots with at least one wrong observable.
+    """
+    predicted = np.asarray(predicted, dtype=bool)
+    actual = np.asarray(actual, dtype=bool)
+    if predicted.shape != actual.shape:
+        raise ValueError(
+            f"shape mismatch: predicted {predicted.shape} vs actual {actual.shape}"
+        )
+    return np.any(predicted != actual, axis=tuple(range(1, predicted.ndim)))
+
+
 def logical_error_rate(predicted: np.ndarray, actual: np.ndarray) -> float:
     """Fraction of shots with at least one mispredicted observable.
 
@@ -21,14 +44,7 @@ def logical_error_rate(predicted: np.ndarray, actual: np.ndarray) -> float:
     Returns:
         The logical error rate over the batch in [0, 1].
     """
-    predicted = np.asarray(predicted, dtype=bool)
-    actual = np.asarray(actual, dtype=bool)
-    if predicted.shape != actual.shape:
-        raise ValueError(
-            f"shape mismatch: predicted {predicted.shape} vs actual {actual.shape}"
-        )
-    mismatched = np.any(predicted != actual, axis=tuple(range(1, predicted.ndim)))
-    return float(np.mean(mismatched))
+    return float(np.mean(logical_error_outcomes(predicted, actual)))
 
 
 def logical_error_per_cycle(error_rate: float, rounds: int) -> float:

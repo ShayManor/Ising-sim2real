@@ -7,12 +7,21 @@ CSV and a tqdm progress bar.
 
 Decoders
 --------
-``mwpm``        PyMatching (MWPM) off the shipped SI1000 DEM. The validated
-                classical baseline (CLAUDE.md step 2/3).
-``mwpm-rl``     PyMatching off the shipped RL-optimized DEM.
-``ising``       NVIDIA Ising pre-decoder + PyMatching on the cleaned residual
-                (RQ4). NOT validated against the baseline -- that is the
-                experiment; always read its number next to ``mwpm``.
+``mwpm``            PyMatching (MWPM) off the shipped SI1000 DEM. The validated
+                    classical baseline (CLAUDE.md step 2/3).
+``mwpm-rl``         PyMatching off the shipped RL-optimized DEM.
+``beliefmatching``  BP-informed correlated matching off the SI1000 DEM (Libra
+                    family) -- the strong classical baseline.
+``bposd``           BP + ordered-statistics decoding (``ldpc``) off the SI1000 DEM.
+``bplsd``           BP + localized-statistics decoding (``ldpc``) off the SI1000 DEM.
+``tesseract``       Tesseract A*-search most-likely-error decoder off the SI1000 DEM.
+``ising``           NVIDIA Ising pre-decoder + PyMatching on the cleaned residual
+                    (RQ4). NOT validated against the baseline -- that is the
+                    experiment; always read its number next to ``mwpm``.
+
+The ``beliefmatching``/``bposd``/``bplsd``/``tesseract`` panel needs the optional
+``decoders`` extra (``uv sync --extra decoders``); they are imported lazily so a
+classical/ising-only run does not require it.
 
 Run it (uv)
 -----------
@@ -38,10 +47,28 @@ from ising_sim2real.decoders.pymatching_decoder import PyMatchingDecoder
 from ising_sim2real.ingest.dataset import discover_configs
 from ising_sim2real.ingest.detectors import measurements_to_detectors
 from ising_sim2real.ingest.willow import WillowConfig, load_run
-from ising_sim2real.metrics import logical_error_per_cycle, logical_error_rate
+from ising_sim2real.metrics import logical_error_outcomes, logical_error_per_cycle
 from ising_sim2real.paths import OUTPUTS_DIR, WILLOW_RAW_DIR
 
-ALL_DECODERS = ("mwpm", "mwpm-rl", "ising")
+ALL_DECODERS = ("mwpm", "mwpm-rl", "beliefmatching", "bposd", "bplsd", "tesseract", "ising")
+
+# DEM-based panel decoders beyond the two PyMatching baselines. Each scores off the
+# shipped SI1000 DEM (like ``mwpm``), so panel differences are algorithmic, not prior
+# differences. Resolved lazily from "module:attr" so the optional ``decoders`` extra
+# is only needed when one is requested.
+_PANEL_DECODERS = {
+    "beliefmatching": "ising_sim2real.decoders.beliefmatching_decoder:BeliefMatchingDecoder",
+    "bposd": "ising_sim2real.decoders.ldpc_decoder:BpOsdDecoder",
+    "bplsd": "ising_sim2real.decoders.ldpc_decoder:BpLsdDecoder",
+    "tesseract": "ising_sim2real.decoders.tesseract_decoder:TesseractDecoder",
+}
+
+
+def _resolve(spec: str):
+    import importlib
+
+    module, attr = spec.split(":")
+    return getattr(importlib.import_module(module), attr)
 
 
 @dataclass
@@ -55,6 +82,7 @@ class EvalRow:
     decoder: str
     model: str
     shots: int
+    n_errors: int
     ler: float
     ler_per_cycle: float
     decode_seconds: float
@@ -81,9 +109,19 @@ def _select_configs(args) -> list[WillowConfig]:
     return configs
 
 
-def _score(predictions: np.ndarray, observables: np.ndarray, rounds: int) -> tuple[float, float]:
-    ler = logical_error_rate(predictions, observables)
-    return ler, logical_error_per_cycle(ler, rounds)
+def _score(predictions: np.ndarray, observables: np.ndarray, rounds: int):
+    """Return (per-shot outcomes, total LER, per-cycle LER) for one decode."""
+    outcomes = logical_error_outcomes(predictions, observables)
+    ler = float(np.mean(outcomes))
+    return outcomes, ler, logical_error_per_cycle(ler, rounds)
+
+
+def _record(store, cfg: WillowConfig, decoder: str, n: int, outcomes: np.ndarray) -> None:
+    """Stash a shard's per-shot outcome vector (bit-packed) for later NPZ dump."""
+    if store is None:
+        return
+    key = f"d{cfg.distance}|{cfg.basis}|{cfg.orientation}|r{cfg.rounds}|{decoder}|n{n}"
+    store[key] = np.packbits(np.asarray(outcomes, dtype=bool))
 
 
 def _load_config(args, cfg: WillowConfig):
@@ -130,6 +168,10 @@ def evaluate(args) -> list[EvalRow]:
         )
 
     rows: list[EvalRow] = []
+    # Per-shot outcome vectors (bit-packed), keyed per (config, decoder), so every
+    # downstream statistic can be recomputed locally without re-decoding. None unless
+    # --outcomes-dir is set.
+    outcomes_store: dict | None = {} if args.outcomes_dir else None
     bar = tqdm(configs, unit="cfg", dynamic_ncols=True, disable=args.no_progress)
     for cfg in bar:
         bar.set_description(f"d{cfg.distance} {cfg.basis} {cfg.orientation} r{cfg.rounds}")
@@ -142,21 +184,32 @@ def evaluate(args) -> list[EvalRow]:
 
         if "mwpm" in args.decoders and data.dem_si1000 is not None:
             res = PyMatchingDecoder.from_dem(data.dem_si1000).decode_batch(dets)
-            ler, perc = _score(res.predictions, obs, cfg.rounds)
+            outcomes, ler, perc = _score(res.predictions, obs, cfg.rounds)
             rows.append(EvalRow(cfg.distance, cfg.basis, cfg.orientation, cfg.rounds,
-                                "mwpm", "-", n, ler, perc, res.seconds))
+                                "mwpm", "-", n, int(outcomes.sum()), ler, perc, res.seconds))
+            _record(outcomes_store, cfg, "mwpm", n, outcomes)
             postfix["mwpm/c"] = f"{perc:.4f}"
 
         if "mwpm-rl" in args.decoders and data.dem_rl is not None:
             res = PyMatchingDecoder.from_dem(data.dem_rl).decode_batch(dets)
-            ler, perc = _score(res.predictions, obs, cfg.rounds)
+            outcomes, ler, perc = _score(res.predictions, obs, cfg.rounds)
             rows.append(EvalRow(cfg.distance, cfg.basis, cfg.orientation, cfg.rounds,
-                                "mwpm-rl", "-", n, ler, perc, res.seconds))
+                                "mwpm-rl", "-", n, int(outcomes.sum()), ler, perc, res.seconds))
+            _record(outcomes_store, cfg, "mwpm-rl", n, outcomes)
+
+        for dname, spec in _PANEL_DECODERS.items():
+            if dname in args.decoders and data.dem_si1000 is not None:
+                res = _resolve(spec).from_dem(data.dem_si1000).decode_batch(dets)
+                outcomes, ler, perc = _score(res.predictions, obs, cfg.rounds)
+                rows.append(EvalRow(cfg.distance, cfg.basis, cfg.orientation, cfg.rounds,
+                                    dname, "-", n, int(outcomes.sum()), ler, perc, res.seconds))
+                _record(outcomes_store, cfg, dname, n, outcomes)
+                postfix[f"{dname[:4]}/c"] = f"{perc:.4f}"
 
         if want_ising:
             if cfg.rounds < IsingPreDecoder.MIN_ROUNDS:
                 rows.append(EvalRow(cfg.distance, cfg.basis, cfg.orientation, cfg.rounds,
-                                    "ising", model_info.name, n, float("nan"), float("nan"),
+                                    "ising", model_info.name, n, 0, float("nan"), float("nan"),
                                     0.0, note=f"skipped: rounds<{IsingPreDecoder.MIN_ROUNDS}"))
             else:
                 dec = IsingPreDecoder(model, data.circuit, cfg.basis, cfg.distance, cfg.rounds,
@@ -168,18 +221,27 @@ def evaluate(args) -> list[EvalRow]:
                     # layout; mapping Willow's XZZX detectors into that order is the
                     # open step-4 problem. Record it instead of crashing the shard.
                     rows.append(EvalRow(cfg.distance, cfg.basis, cfg.orientation, cfg.rounds,
-                                        "ising", model_info.name, n, float("nan"), float("nan"),
+                                        "ising", model_info.name, n, 0, float("nan"), float("nan"),
                                         0.0, note=f"ising-failed: {type(exc).__name__}"))
                 else:
-                    ler, perc = _score(res.predictions, obs, cfg.rounds)
+                    outcomes, ler, perc = _score(res.predictions, obs, cfg.rounds)
                     rows.append(EvalRow(cfg.distance, cfg.basis, cfg.orientation, cfg.rounds,
-                                        "ising", model_info.name, n, ler, perc, res.seconds,
+                                        "ising", model_info.name, n, int(outcomes.sum()), ler, perc,
+                                        res.seconds,
                                         note=f"R={model_info.receptive_field},rot={args.rotation}"))
+                    _record(outcomes_store, cfg, "ising", n, outcomes)
                     postfix["ising/c"] = f"{perc:.4f}"
 
         if postfix:
             bar.set_postfix(postfix)
     bar.close()
+
+    if outcomes_store is not None and outcomes_store:
+        args.outcomes_dir.mkdir(parents=True, exist_ok=True)
+        npz_path = args.outcomes_dir / (args.out.stem + ".outcomes.npz")
+        np.savez_compressed(npz_path, **outcomes_store)
+        print(f"wrote per-shot outcomes for {len(outcomes_store)} shards -> {npz_path}",
+              file=sys.stderr)
     return rows
 
 
@@ -224,6 +286,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="HF dataset repo when --source hf")
     p.add_argument("--data-dir", type=Path, default=WILLOW_RAW_DIR)
     p.add_argument("--out", type=Path, default=OUTPUTS_DIR / "eval_results.csv")
+    p.add_argument("--outcomes-dir", type=Path, default=None,
+                   help="also dump per-shot logical-error outcomes (bit-packed .npz) here, "
+                        "one file per --out CSV, so bootstrap/rank-CIs can be computed locally")
     p.add_argument("--limit", type=int, default=None, help="cap number of configs (smoke test)")
     p.add_argument("--no-progress", action="store_true")
     args = p.parse_args(argv)
