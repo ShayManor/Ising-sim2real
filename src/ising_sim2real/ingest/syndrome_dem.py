@@ -16,6 +16,7 @@ from __future__ import annotations
 from itertools import combinations
 
 import numpy as np
+import stim
 
 Support = frozenset[int]
 
@@ -84,3 +85,25 @@ def regularize_moment(
     if s_bar < 0 and sigma_s > 0 and abs(s_bar) / sigma_s < snr_threshold:
         return sigma_s
     return raw_moment
+
+
+def parse_dem_events(dem: "stim.DetectorErrorModel") -> list[Support]:
+    """One detector-support set per ``error`` instruction in the flattened DEM.
+
+    ``^`` separators (``stim.DemTarget.is_separator()``) are a suggested
+    decomposition hint for matching decoders, not an event boundary -- an
+    instruction like ``error(p) D1 D4 ^ D20`` is a SINGLE event whose true
+    support is the union of every detector target on both sides, ``{1,4,20}``.
+    Logical-observable targets (``is_logical_observable_id()``) are excluded
+    from the support set; they don't affect probability estimation (the
+    logical-observable assignment is inherited unchanged from the reference
+    DEM, per the paper's Appendix A).
+    """
+    events: list[Support] = []
+    for instr in dem.flattened():
+        if instr.type != "error":
+            continue
+        targets = instr.targets_copy()
+        support = frozenset(t.val for t in targets if t.is_relative_detector_id())
+        events.append(support)
+    return events

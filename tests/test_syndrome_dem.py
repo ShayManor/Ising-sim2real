@@ -5,10 +5,12 @@ Appendix B). No network, no real data -- pure numpy on hand-constructed arrays.
 from __future__ import annotations
 
 import numpy as np
+import stim
 
 from ising_sim2real.ingest.syndrome_dem import (
     bootstrap_mean_std,
     nonempty_subsets,
+    parse_dem_events,
     regularize_moment,
     spins_from_detection_events,
 )
@@ -78,3 +80,32 @@ def test_regularize_moment_unresolved_negative_floored():
     assert raw < 0  # sanity check on the constructed fixture
     result = regularize_moment(values, raw_moment=raw, seed=5)
     assert result > 0
+
+
+def test_parse_dem_events_simple_graphlike():
+    dem = stim.DetectorErrorModel("error(0.1) D0 D1\nerror(0.2) D2\n")
+    events = parse_dem_events(dem)
+    assert set(events) == {frozenset({0, 1}), frozenset({2})}
+
+
+def test_parse_dem_events_ignores_separator():
+    # The `^` is a suggested-decomposition hint (stim.DemTarget.is_separator()),
+    # not an event boundary -- this is ONE event with support {D1, D4, D20}.
+    dem = stim.DetectorErrorModel("error(0.05) D1 D4 ^ D20\n")
+    events = parse_dem_events(dem)
+    assert events == [frozenset({1, 4, 20})]
+
+
+def test_parse_dem_events_ignores_logical_observable_targets():
+    # A logical-observable target (L0) must not appear in the detector support.
+    dem = stim.DetectorErrorModel("error(0.1) D0 D1 L0\n")
+    events = parse_dem_events(dem)
+    assert events == [frozenset({0, 1})]
+
+
+def test_parse_dem_events_skips_non_error_instructions():
+    dem = stim.DetectorErrorModel(
+        "error(0.1) D0 D1\nlogical_observable L0\n"
+    )
+    events = parse_dem_events(dem)
+    assert events == [frozenset({0, 1})]
