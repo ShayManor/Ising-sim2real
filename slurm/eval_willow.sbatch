@@ -65,7 +65,17 @@ ONLY="${ONLY:-}"                                            # run just this one 
 # rounds, so this keeps the sweep in the wall clock. Cheap matching (mwpm/mwpm-rl)
 # always runs at ALL rounds. Set MAX_ROUNDS='' to uncap the expensive ones too.
 MAX_ROUNDS="${MAX_ROUNDS:-70}"
-NPAR="${NPAR:-6}"                                           # concurrent CPU shards (cores split across them)
+# The panel decoders run a SINGLE-THREADED per-shot loop, so concurrency (not
+# threads-per-shard) is what uses the node. Run ~one shard per core; shards are
+# sub-sharded per patch (and per round for the two search-explosive decoders) so a
+# slow decoder no longer serializes 9 patches x 6 rounds on one core.
+NPAR="${NPAR:-48}"                                          # concurrent shards (pool, not barrier waves)
+# BP+OSD (osd_cs, accurate) and Tesseract (A* search) explode with code size/rounds
+# -- ~10 h for a single d7 config at 50k shots. Cap THEIR shots so a shard is bounded
+# (n_errors + per-shot .npz keep the CIs honest); matching decoders keep all 50k.
+# Set SLOW_SHOTS='' to uncap (only if you have days of wall clock).
+SLOW_SHOTS="${SLOW_SHOTS:-10000}"
+SLOW_DECODERS="${SLOW_DECODERS:-bposd tesseract}"          # sub-sharded per round + shot-capped
 DEVICE="${DEVICE:-cpu}"                                     # panel + ising both run on CPU here
 SOURCE="${SOURCE:-auto}"                                    # auto = local Willow tree if present, else HF
 HF_REPO="${HF_REPO:-ShayManor/willow-surface-code-detection-events}"
@@ -97,7 +107,6 @@ export HF_HOME="${HF_HOME:-$OUTDIR/hf_cache}"
 
 cd "$REPO"
 mkdir -p "$OUTDIR"
-shots_flag=(); [ -n "$SHOTS" ] && shots_flag=(--shots "$SHOTS")
 
 # --- panel-extra preflight: the ldpc/beliefmatching/tesseract adapters need the
 # optional `decoders` extra. Fail fast with a login-node fix rather than crashing
@@ -121,11 +130,14 @@ if [ "$SOURCE" = "auto" ]; then
 fi
 if [ "$SOURCE" = "hf" ]; then
   export HF_HUB_DISABLE_PROGRESS_BARS=1
-  echo "pulling dataset $HF_REPO into $HF_HOME (public, no token) ..."
-  HF_HUB_DISABLE_IMPLICIT_TOKEN=1 uv run python - "$HF_REPO" <<'PY'
+  echo "pulling dataset $HF_REPO into $HF_HOME (uses HF_TOKEN if set; anonymous is rate-limited) ..."
+  uv run python - "$HF_REPO" <<'PY'
 import sys
 from huggingface_hub import snapshot_download
-path = snapshot_download(sys.argv[1], repo_type="dataset", token=False)
+# token=None -> use ambient HF_TOKEN / cached login if present, else anonymous.
+# Anonymous bulk downloads are throttled and can stall, so an authenticated
+# submitting environment (HF_TOKEN in the login profile) is strongly preferred.
+path = snapshot_download(sys.argv[1], repo_type="dataset", token=None, max_workers=16)
 print("dataset ready at", path)
 PY
 fi
@@ -147,57 +159,96 @@ WALL0=$(date +%s)
 fmt () { local s=$1; printf '%dh%02dm%02ds' $((s/3600)) $(((s%3600)/60)) $((s%60)); }
 
 is_expensive () { case "$1" in bposd|bplsd|tesseract|ising) return 0 ;; *) return 1 ;; esac; }
+is_slow () { case " $SLOW_DECODERS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+# Patches per distance (fixed for this dataset: d3 has 9, d5 has 4, d7 has 1). Used
+# to sub-shard so each patch decodes on its own core instead of 9 serially on one.
+patches_for () { case "$1" in
+  3) echo "q2_7 q4_5 q4_9 q6_3 q6_7 q6_11 q8_5 q8_9 q10_7" ;;
+  5) echo "q4_7 q6_5 q6_9 q8_7" ;;
+  7) echo "q6_7" ;;
+esac; }
+# Round counts <= MAX_ROUNDS (the slow decoders shard one round each; d7 has a single
+# patch, so per-round is the only way to parallelize it).
+STD_ROUNDS="1 10 13 30 50 70 90 110 130 150 170 190 210 230 250"
+rounds_le () { for r in $STD_ROUNDS; do { [ -z "$MAX_ROUNDS" ] || [ "$r" -le "$MAX_ROUNDS" ]; } && echo "$r"; done; }
 
 oc_flag=(); [ "$OUTCOMES" = 1 ] && oc_flag=(--outcomes-dir "$OUTCOMES_DIR")
-run_shard () {  # $1=tag $2=out.csv  $3..=ising-eval args
+run_shard () {  # $1=tag $2=out.csv  $3..=ising-eval args (caller supplies --shots)
   local tag="$1" out="$2"; shift 2
   if [ "${RESUME:-0}" = 1 ] && [ -s "$out" ]; then echo "[$(date +%H:%M:%S)] [$tag] skip (resume): $(basename "$out")"; return; fi
   local t0; t0=$(date +%s)
   echo "[$(date +%H:%M:%S)] [$tag] start:    $(basename "$out")"
   uv run ising-eval --source "$SOURCE" --hf-repo "$HF_REPO" --device "$DEVICE" \
-    "${shots_flag[@]}" "${oc_flag[@]}" --out "$out" "$@"
+    ${oc_flag[@]+"${oc_flag[@]}"} --out "$out" "$@"
   echo "[$(date +%H:%M:%S)] [$tag] finished: $(basename "$out") in $(fmt $(( $(date +%s) - t0 )))"
 }
 
-# --- build the shard list: (decoder, distance, basis) + (ising model, distance, basis)
+# --- build the shard list. High distance first so the heaviest shards start early.
+# cheap decoders  -> one shard per (decoder, distance, basis, patch), all rounds.
+# slow decoders   -> one shard per (decoder, distance, basis, patch, round), shot-capped.
+# ising           -> one shard per (model, distance, basis, patch), rounds<=MAX_ROUNDS.
 jobs=()
-for d in $DISTANCES; do for b in $BASES; do
-  for dec in $DECODERS; do jobs+=("cls:$dec:$d:$b"); done
-  for m in $MODELS;   do jobs+=("isg:$m:$d:$b");   done
-done; done
+for d in 7 5 3; do
+  case " $DISTANCES " in *" $d "*) : ;; *) continue ;; esac
+  for b in $BASES; do for p in $(patches_for "$d"); do
+    for dec in $DECODERS; do
+      if is_slow "$dec"; then
+        for r in $(rounds_le); do jobs+=("slow:$dec:$d:$b:$p:$r"); done
+      else
+        jobs+=("cls:$dec:$d:$b:$p:-")
+      fi
+    done
+    for m in $MODELS; do jobs+=("isg:$m:$d:$b:$p:-"); done
+  done; done
+done
 njobs=${#jobs[@]}
 [ "$njobs" -gt 0 ] || { echo "ERROR: empty plan (DECODERS and MODELS both empty?)"; exit 1; }
 [ "$NPAR" -gt "$njobs" ] && NPAR="$njobs"; [ "${NPAR:-0}" -lt 1 ] && NPAR=1
 CORES="${SLURM_CPUS_PER_TASK:-96}"
 STHREADS=$(( CORES / NPAR )); [ "$STHREADS" -lt 1 ] && STHREADS=1
-echo "plan: $njobs shards, $NPAR concurrent x $STHREADS threads on $CORES cores; source=$SOURCE shots=${SHOTS:-all} max-rounds(expensive)=${MAX_ROUNDS:-all}"
+echo "plan: $njobs shards, $NPAR concurrent x $STHREADS threads on $CORES cores; source=$SOURCE shots=${SHOTS:-all} slow_shots=${SLOW_SHOTS:-all} max-rounds(expensive)=${MAX_ROUNDS:-all}"
 
-dispatch () {  # $1="kind:name:d:b" -- subshell so thread env is per-shard
-  local kind name d b; IFS=: read -r kind name d b <<< "$1"
+dispatch () {  # $1="kind:name:d:b:patch:round" -- subshell so thread env is per-shard
+  local kind name d b p r; IFS=: read -r kind name d b p r <<< "$1"
   export OMP_NUM_THREADS="$STHREADS" MKL_NUM_THREADS="$STHREADS"
-  local mr_flag=()
-  if [ "$kind" = isg ]; then
-    [ -n "$MAX_ROUNDS" ] && mr_flag=(--max-rounds "$MAX_ROUNDS")
-    run_shard "isg d$d$b/$name" "$OUTDIR/ising_${name}_d${d}_${b}.csv" \
-      --decoders ising --model "$name" --distances "$d" --bases "$b" "${mr_flag[@]}"
-  else
-    if [ -n "$MAX_ROUNDS" ] && is_expensive "$name"; then mr_flag=(--max-rounds "$MAX_ROUNDS"); fi
-    run_shard "$name d$d$b" "$OUTDIR/${name}_d${d}_${b}.csv" \
-      --decoders "$name" --distances "$d" --bases "$b" "${mr_flag[@]}"
-  fi
+  local sh=(); [ -n "$SHOTS" ] && sh=(--shots "$SHOTS")
+  case "$kind" in
+    isg)
+      local mr=(); [ -n "$MAX_ROUNDS" ] && mr=(--max-rounds "$MAX_ROUNDS")
+      run_shard "isg d$d$b/$p/$name" "$OUTDIR/ising_${name}_d${d}_${b}_${p}.csv" \
+        --decoders ising --model "$name" --distances "$d" --bases "$b" --patches "$p" \
+        ${mr[@]+"${mr[@]}"} ${sh[@]+"${sh[@]}"} ;;
+    slow)
+      local shots="${SLOW_SHOTS:-$SHOTS}"          # SLOW_SHOTS caps these; '' = use SHOTS
+      local ss=(); [ -n "$shots" ] && ss=(--shots "$shots")
+      run_shard "$name d$d$b/$p/r$r" "$OUTDIR/${name}_d${d}_${b}_${p}_r${r}.csv" \
+        --decoders "$name" --distances "$d" --bases "$b" --patches "$p" --rounds "$r" \
+        ${ss[@]+"${ss[@]}"} ;;
+    cls)
+      local mr=(); if [ -n "$MAX_ROUNDS" ] && is_expensive "$name"; then mr=(--max-rounds "$MAX_ROUNDS"); fi
+      run_shard "$name d$d$b/$p" "$OUTDIR/${name}_d${d}_${b}_${p}.csv" \
+        --decoders "$name" --distances "$d" --bases "$b" --patches "$p" \
+        ${mr[@]+"${mr[@]}"} ${sh[@]+"${sh[@]}"} ;;
+  esac
 }
 
-# Launch in waves of NPAR (portable; no `wait -n` needed).
-for (( i=0; i<njobs; i+=NPAR )); do
-  for (( k=0; k<NPAR && i+k<njobs; k++ )); do dispatch "${jobs[i+k]}" & done
-  wait   # barrier: finish this wave before the next
+# Continuous pool (portable, bash 3.2+): keep <= NPAR shards running by polling the
+# live background-job count before launching the next. Shards run for minutes, so 1s
+# polling is free -- and this avoids `wait -n` (needs bash >= 4.3, not on all nodes).
+# A failed background shard does not trip set -e in the parent; it is logged, leaves
+# no CSV, and is retried on RESUME.
+for j in "${jobs[@]}"; do
+  while [ "$(jobs -rp | wc -l)" -ge "$NPAR" ]; do sleep 1; done
+  dispatch "$j" &
 done
+wait
 
 # --- merge every shard CSV into one results file (single header) -------------
 merged="$OUTDIR/eval_all.csv"
 first=1
 : > "$merged"
-for f in "$OUTDIR"/*_d[357]_[XZ].csv; do
+for f in "$OUTDIR"/*_d[357]_[XZ]_*.csv; do
   [ -s "$f" ] || continue
   [ "$f" = "$merged" ] && continue
   if [ "$first" = 1 ]; then cat "$f" > "$merged"; first=0; else tail -n +2 "$f" >> "$merged"; fi

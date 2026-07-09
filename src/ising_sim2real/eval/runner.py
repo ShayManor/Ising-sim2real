@@ -90,7 +90,7 @@ class EvalRow:
 
 
 def _select_configs(args) -> list[WillowConfig]:
-    if args.source == "hf":
+    if args.source in ("hf", "synth"):
         from ising_sim2real.ingest.hf import discover_configs_hf
 
         configs = discover_configs_hf(args.hf_repo)
@@ -100,6 +100,8 @@ def _select_configs(args) -> list[WillowConfig]:
         configs = [c for c in configs if c.distance in args.distances]
     if args.bases:
         configs = [c for c in configs if c.basis in args.bases]
+    if args.patches:
+        configs = [c for c in configs if c.orientation in args.patches]
     if args.rounds:
         configs = [c for c in configs if c.rounds in args.rounds]
     if args.max_rounds is not None:
@@ -135,6 +137,14 @@ def _load_config(args, cfg: WillowConfig):
         from ising_sim2real.ingest.hf import load_config_from_hf
 
         return load_config_from_hf(cfg, repo=args.hf_repo)
+
+    if args.source == "synth":
+        from ising_sim2real.ingest.synthetic import sample_config
+
+        return sample_config(
+            cfg, rung=args.rung, p=args.synth_p, shots=args.synth_shots,
+            seed=args.seed, repo=args.hf_repo,
+        )
 
     from ising_sim2real.ingest.hf import HFConfigData
 
@@ -274,16 +284,27 @@ def main(argv: list[str] | None = None) -> int:
                    help="public model id 1-5 for the checkpoint's architecture (required with --model custom)")
     p.add_argument("--distances", type=_int_list, default=None, help="e.g. 3,5,7 (default: all)")
     p.add_argument("--bases", type=_str_list, default=None, help="X,Z (default: both)")
+    p.add_argument("--patches", type=_str_list, default=None,
+                   help="orientation labels, e.g. q6_7,q4_5 (default: all patches for the distance)")
     p.add_argument("--rounds", type=_int_list, default=None, help="exact round counts, e.g. 10,30")
     p.add_argument("--max-rounds", type=int, default=None, help="only configs with rounds <= this")
     p.add_argument("--shots", type=int, default=None, help="subsample N shots/config (default: all 50000)")
     p.add_argument("--rotation", default="XV", help="Ising code rotation: XV|XH|ZV|ZH (default: XV)")
     p.add_argument("--syn-noise", type=float, default=1e-3, help="uniform noise for the residual matcher DEM")
     p.add_argument("--device", default="cpu", help="auto|cpu|cuda|cuda:N|mps (default: cpu — fastest here)")
-    p.add_argument("--source", choices=("local", "hf"), default="local",
-                   help="local Willow tree (default) or the published HF dataset")
+    p.add_argument("--source", choices=("local", "hf", "synth"), default="local",
+                   help="local Willow tree (default), the published HF dataset, or a "
+                        "sampled synthetic noise rung")
     p.add_argument("--hf-repo", default="ShayManor/willow-surface-code-detection-events",
-                   help="HF dataset repo when --source hf")
+                   help="HF dataset repo when --source hf or synth (circuit+DEM fetch)")
+    p.add_argument("--rung", choices=("uniform", "si1000"), default=None,
+                   help="synthetic noise rung (required when --source synth)")
+    p.add_argument("--synth-p", type=float, default=2e-3,
+                   help="uniform-rung per-error probability (default: 2e-3)")
+    p.add_argument("--synth-shots", type=int, default=20000,
+                   help="shots to SAMPLE per synthetic config (default: 20000)")
+    p.add_argument("--seed", type=int, default=1234,
+                   help="base seed for synthetic sampling (default: 1234)")
     p.add_argument("--data-dir", type=Path, default=WILLOW_RAW_DIR)
     p.add_argument("--out", type=Path, default=OUTPUTS_DIR / "eval_results.csv")
     p.add_argument("--outcomes-dir", type=Path, default=None,
@@ -298,6 +319,8 @@ def main(argv: list[str] | None = None) -> int:
         p.error(f"unknown decoders {sorted(bad)}; choose from {ALL_DECODERS}")
     if args.model == "custom" and (args.checkpoint is None or args.model_id is None):
         p.error("--model custom requires both --checkpoint and --model-id")
+    if args.source == "synth" and args.rung is None:
+        p.error("--source synth requires --rung uniform|si1000")
 
     print(f"device: {describe_device(resolve_device(args.device))}  decoders: {args.decoders}", file=sys.stderr)
     rows = evaluate(args)

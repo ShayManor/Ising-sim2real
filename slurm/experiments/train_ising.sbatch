@@ -2,8 +2,8 @@
 #SBATCH --job-name=ising_train
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=64
-#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=128
+#SBATCH --gres=gpu:2
 #SBATCH --time=12:00:00
 #SBATCH -A lilly-rob1
 #SBATCH -p smallgpu
