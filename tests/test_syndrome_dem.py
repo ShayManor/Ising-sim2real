@@ -105,7 +105,7 @@ def test_parse_dem_events_ignores_logical_observable_targets():
 
 def test_parse_dem_events_skips_non_error_instructions():
     dem = stim.DetectorErrorModel(
-        "error(0.1) D0 D1\nlogical_observable L0\n"
+        "error(0.1) D0 D1\ndetector(0, 0) D0\nlogical_observable L0\n"
     )
     events = parse_dem_events(dem)
     assert events == [frozenset({0, 1})]
