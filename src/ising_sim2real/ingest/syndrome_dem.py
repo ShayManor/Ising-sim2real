@@ -107,3 +107,104 @@ def parse_dem_events(dem: "stim.DetectorErrorModel") -> list[Support]:
         support = frozenset(t.val for t in targets if t.is_relative_detector_id())
         events.append(support)
     return events
+
+
+def estimate_dem_from_syndromes(
+    dem_si1000: "stim.DetectorErrorModel",
+    detection_events: np.ndarray,
+) -> "stim.DetectorErrorModel":
+    """Build a DEM with the same graph as ``dem_si1000`` but probabilities
+    estimated from real ``detection_events`` (paper Eqs. B5-B12, applied
+    uniformly to every event size 1-4 -- this subsumes the simpler no-hyperedge
+    formulas B3/B4 as the special case where an event has no strict supersets
+    in this DEM, so only one code path is needed).
+
+    ``detection_events`` is a ``(shots, num_detectors)`` bool array of REAL
+    Willow detection events for the same config ``dem_si1000`` was shipped for.
+    """
+    events = parse_dem_events(dem_si1000)
+
+    # Guard the ambiguous case from the paper's Appendix A: two events sharing
+    # a detector support but flipping different logical observables can't be
+    # told apart from detector moments alone (which never see logical
+    # outcomes). Expected to never trigger on this project's shipped SI1000
+    # DEMs (DEM construction already merges same-signature faults), but fail
+    # loudly rather than silently pick one arbitrarily if it ever does.
+    seen: dict[Support, Support] = {}
+    for instr in dem_si1000.flattened():
+        if instr.type != "error":
+            continue
+        targets = instr.targets_copy()
+        support = frozenset(t.val for t in targets if t.is_relative_detector_id())
+        logicals = frozenset(t.val for t in targets if t.is_logical_observable_id())
+        if support in seen and seen[support] != logicals:
+            raise NotImplementedError(
+                f"support set {sorted(support)} appears with two different "
+                f"logical-observable assignments ({sorted(seen[support])} vs "
+                f"{sorted(logicals)}) -- ambiguous under detector moments alone "
+                "(arXiv:2606.11496 Appendix A); not handled."
+            )
+        seen[support] = logicals
+
+    spins = spins_from_detection_events(detection_events)
+
+    needed: set[Support] = set()
+    for support in events:
+        needed.update(nonempty_subsets(support))
+
+    moments: dict[Support, float] = {}
+    for subset in needed:
+        cols = [spins[:, i] for i in sorted(subset)]
+        products = cols[0].copy()
+        for col in cols[1:]:
+            products = products * col
+        raw = float(products.mean())
+        moments[subset] = regularize_moment(products, raw) if raw < 0 else raw
+
+    supports_by_size: dict[int, list[Support]] = {1: [], 2: [], 3: [], 4: []}
+    for support in events:
+        supports_by_size[len(support)].append(support)
+
+    q: dict[Support, float] = {}
+    p: dict[Support, float] = {}
+    for size in (4, 3, 2, 1):
+        for support in supports_by_size[size]:
+            r_e = 1.0
+            for subset in nonempty_subsets(support):
+                sign = 1 if (len(subset) % 2 == 1) else -1
+                r_e *= moments[subset] ** sign
+
+            if r_e < 0:
+                # Fractional root of a negative number is unphysical -- this
+                # event's rate is not resolved by the data; treat it as
+                # probability 0 (q=1 is the neutral element for the correction
+                # product used by smaller subsets below, per Eq. B8).
+                p[support] = 0.0
+                q[support] = 1.0
+                continue
+
+            correction = 1.0
+            for other_size in range(size + 1, 5):
+                for other_support in supports_by_size[other_size]:
+                    if support < other_support:  # strict subset
+                        correction *= q[other_support] ** -1
+
+            q_e = (r_e ** (1.0 / (2 ** (size - 1)))) * correction
+            p_e = (1.0 - q_e) / 2.0
+
+            if not (0.0 <= p_e <= 1.0):
+                p_e = 0.0
+                q_e = 1.0
+
+            p[support] = p_e
+            q[support] = q_e
+
+    out = stim.DetectorErrorModel()
+    for instr in dem_si1000.flattened():
+        if instr.type == "error":
+            targets = instr.targets_copy()
+            support = frozenset(t.val for t in targets if t.is_relative_detector_id())
+            out.append("error", p[support], targets)
+        else:
+            out.append(instr)
+    return out

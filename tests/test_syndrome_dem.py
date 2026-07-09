@@ -5,10 +5,12 @@ Appendix B). No network, no real data -- pure numpy on hand-constructed arrays.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import stim
 
 from ising_sim2real.ingest.syndrome_dem import (
     bootstrap_mean_std,
+    estimate_dem_from_syndromes,
     nonempty_subsets,
     parse_dem_events,
     regularize_moment,
@@ -109,3 +111,94 @@ def test_parse_dem_events_skips_non_error_instructions():
     )
     events = parse_dem_events(dem)
     assert events == [frozenset({0, 1})]
+
+
+def _estimated_probs(dem: "stim.DetectorErrorModel") -> dict[frozenset[int], float]:
+    out = {}
+    for instr in dem.flattened():
+        if instr.type == "error":
+            support = frozenset(
+                t.val for t in instr.targets_copy() if t.is_relative_detector_id()
+            )
+            out[support] = instr.args_copy()[0]
+    return out
+
+
+def test_estimate_recovers_graphlike_probabilities():
+    dem_text = "error(0.05) D0 D1\nerror(0.03) D1 D2\nerror(0.01) D0\nerror(0.02) D2\n"
+    dem = stim.DetectorErrorModel(dem_text)
+    sampler = dem.compile_sampler(seed=1)
+    dets, _obs, _ = sampler.sample(shots=500_000)
+
+    estimated = estimate_dem_from_syndromes(dem, dets)
+    probs = _estimated_probs(estimated)
+
+    assert probs[frozenset({0, 1})] == pytest.approx(0.05, abs=0.005)
+    assert probs[frozenset({1, 2})] == pytest.approx(0.03, abs=0.005)
+    assert probs[frozenset({0})] == pytest.approx(0.01, abs=0.005)
+    assert probs[frozenset({2})] == pytest.approx(0.02, abs=0.005)
+
+
+def test_estimate_recovers_hyperedge_probabilities():
+    dem_text = (
+        "error(0.05) D0 D1\nerror(0.03) D1 D2\nerror(0.01) D0\n"
+        "error(0.02) D2\nerror(0.02) D0 D1 ^ D2\n"
+    )
+    dem = stim.DetectorErrorModel(dem_text)
+    sampler = dem.compile_sampler(seed=2)
+    dets, _obs, _ = sampler.sample(shots=1_000_000)
+
+    estimated = estimate_dem_from_syndromes(dem, dets)
+    probs = _estimated_probs(estimated)
+
+    assert probs[frozenset({0, 1})] == pytest.approx(0.05, abs=0.005)
+    assert probs[frozenset({1, 2})] == pytest.approx(0.03, abs=0.005)
+    assert probs[frozenset({0})] == pytest.approx(0.01, abs=0.005)
+    assert probs[frozenset({2})] == pytest.approx(0.02, abs=0.005)
+    assert probs[frozenset({0, 1, 2})] == pytest.approx(0.02, abs=0.005)
+
+
+def test_estimate_preserves_dem_structure():
+    # Same graph, same num_detectors/num_observables, only probabilities differ.
+    dem_text = "error(0.05) D0 D1 L0\nerror(0.01) D0\n"
+    dem = stim.DetectorErrorModel(dem_text)
+    sampler = dem.compile_sampler(seed=9)
+    dets, _obs, _ = sampler.sample(shots=100_000)
+
+    estimated = estimate_dem_from_syndromes(dem, dets)
+    assert estimated.num_detectors == dem.num_detectors
+    assert estimated.num_observables == dem.num_observables
+
+    # Logical-observable assignment must be inherited unchanged.
+    original_logicals = {}
+    for instr in dem.flattened():
+        if instr.type == "error":
+            support = frozenset(
+                t.val for t in instr.targets_copy() if t.is_relative_detector_id()
+            )
+            logicals = frozenset(
+                t.val for t in instr.targets_copy() if t.is_logical_observable_id()
+            )
+            original_logicals[support] = logicals
+    for instr in estimated.flattened():
+        if instr.type == "error":
+            support = frozenset(
+                t.val for t in instr.targets_copy() if t.is_relative_detector_id()
+            )
+            logicals = frozenset(
+                t.val for t in instr.targets_copy() if t.is_logical_observable_id()
+            )
+            assert logicals == original_logicals[support]
+
+
+def test_estimate_raises_on_ambiguous_shared_support():
+    # Two events with the SAME detector support but DIFFERENT logical support
+    # cannot be told apart from detector moments alone (paper Appendix A) --
+    # this must fail loudly, not silently mis-split the combined rate.
+    dem_text = "error(0.05) D0 D1 L0\nerror(0.03) D0 D1 L1\n"
+    dem = stim.DetectorErrorModel(dem_text)
+    sampler = dem.compile_sampler(seed=11)
+    dets, _obs, _ = sampler.sample(shots=1000)
+
+    with pytest.raises(NotImplementedError):
+        estimate_dem_from_syndromes(dem, dets)
