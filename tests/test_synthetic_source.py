@@ -108,3 +108,17 @@ def test_syndrome_rung_probabilities_in_unit_interval(cfg):
 def test_syndrome_rung_requires_detection_events():
     with pytest.raises(ValueError):
         build_rung_dem("syndrome", None, 2e-3)  # type: ignore[arg-type]
+
+
+def test_cli_accepts_syndrome_rung_choice(monkeypatch):
+    from ising_sim2real.eval import runner as runner_module
+    # Tests the REAL parser inside runner.main() (not a duplicate/copy of it),
+    # without touching the network: monkeypatch evaluate() to a stub that
+    # returns no rows, so main() runs its full argparse validation (including
+    # the `choices=(...)` check on --rung) and then exits cleanly via the
+    # "no configs matched" path (return code 1) instead of ever calling
+    # discover_configs_hf(). If "syndrome" were not a valid --rung choice,
+    # argparse would raise SystemExit(2) before evaluate() is ever reached.
+    monkeypatch.setattr(runner_module, "evaluate", lambda args: [])
+    rc = runner_module.main(["--rung", "syndrome", "--source", "synth"])
+    assert rc == 1  # "no configs matched the filters" -- proves args parsed fine

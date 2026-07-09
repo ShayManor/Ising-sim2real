@@ -297,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
                         "sampled synthetic noise rung")
     p.add_argument("--hf-repo", default="ShayManor/willow-surface-code-detection-events",
                    help="HF dataset repo when --source hf or synth (circuit+DEM fetch)")
-    p.add_argument("--rung", choices=("uniform", "si1000"), default=None,
+    p.add_argument("--rung", choices=("uniform", "si1000", "syndrome"), default=None,
                    help="synthetic noise rung (required when --source synth)")
     p.add_argument("--synth-p", type=float, default=2e-3,
                    help="uniform-rung per-error probability (default: 2e-3)")
@@ -320,7 +320,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.model == "custom" and (args.checkpoint is None or args.model_id is None):
         p.error("--model custom requires both --checkpoint and --model-id")
     if args.source == "synth" and args.rung is None:
-        p.error("--source synth requires --rung uniform|si1000")
+        p.error("--source synth requires --rung uniform|si1000|syndrome")
 
     print(f"device: {describe_device(resolve_device(args.device))}  decoders: {args.decoders}", file=sys.stderr)
     rows = evaluate(args)
