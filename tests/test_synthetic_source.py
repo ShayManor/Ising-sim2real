@@ -122,3 +122,39 @@ def test_cli_accepts_syndrome_rung_choice(monkeypatch):
     monkeypatch.setattr(runner_module, "evaluate", lambda args: [])
     rc = runner_module.main(["--rung", "syndrome", "--source", "synth"])
     assert rc == 1  # "no configs matched the filters" -- proves args parsed fine
+
+
+def test_syndrome_mwpm_below_real_row(cfg):
+    """Syndrome-estimated-DEM-sampled events must decode cleaner than real
+    hardware -- same S7 validation gate as the si1000/uniform rungs.
+    """
+    if not REAL_ALL.exists():
+        pytest.skip(f"{REAL_ALL} not present locally")
+
+    data = sample_config(cfg, rung="syndrome", p=2e-3, shots=5000, seed=1234)
+    res = PyMatchingDecoder.from_dem(data.dem_si1000).decode_batch(data.detectors)
+    ler = logical_error_rate(res.predictions, data.observables)
+    assert 0.0 <= ler < 0.5
+    perc = logical_error_per_cycle(ler, cfg.rounds)
+
+    real_perc = []
+    with REAL_ALL.open(newline="") as f:
+        for row in csv.DictReader(f):
+            if (row["decoder"] == "mwpm" and int(row["distance"]) == cfg.distance
+                    and row["basis"] == cfg.basis and int(row["rounds"]) == cfg.rounds):
+                try:
+                    real_perc.append(float(row["ler_per_cycle"]))
+                except ValueError:
+                    continue
+    if not real_perc:
+        pytest.skip("no matching real-row mwpm rows to compare against")
+    assert perc <= min(real_perc), (
+        f"synthetic syndrome mwpm per-cycle LER {perc} not below real-row {min(real_perc)}"
+    )
+
+
+def test_syndrome_sampling_is_seed_reproducible(cfg):
+    a = sample_config(cfg, rung="syndrome", p=2e-3, shots=200, seed=42)
+    b = sample_config(cfg, rung="syndrome", p=2e-3, shots=200, seed=42)
+    assert np.array_equal(a.detectors, b.detectors)
+    assert np.array_equal(a.observables, b.observables)

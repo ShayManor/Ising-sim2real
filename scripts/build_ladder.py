@@ -26,6 +26,7 @@ RESULTS = os.path.join(HERE, "results")
 RUNGS = [
     ("uniform", "willow_synth_uniform"),
     ("si1000", "willow_synth_si1000"),
+    ("syndrome", "willow_synth_syndrome"),
     ("real", "willow_real"),
 ]
 
