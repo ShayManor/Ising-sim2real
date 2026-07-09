@@ -158,3 +158,15 @@ def test_syndrome_sampling_is_seed_reproducible(cfg):
     b = sample_config(cfg, rung="syndrome", p=2e-3, shots=200, seed=42)
     assert np.array_equal(a.detectors, b.detectors)
     assert np.array_equal(a.observables, b.observables)
+
+    # Task 7: also confirm the estimated-DEM output itself (not just the
+    # resampled shots) is bit-identical run-to-run on real data -- pins that
+    # estimate_dem_from_syndromes has no hidden nondeterminism (e.g. an
+    # unseeded bootstrap call) independent of the sampling step.
+    a_probs = np.array(
+        [instr.args_copy()[0] for instr in a.dem_si1000.flattened() if instr.type == "error"]
+    )
+    b_probs = np.array(
+        [instr.args_copy()[0] for instr in b.dem_si1000.flattened() if instr.type == "error"]
+    )
+    assert np.array_equal(a_probs, b_probs)
