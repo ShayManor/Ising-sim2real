@@ -88,3 +88,23 @@ def test_sampling_is_seed_reproducible(cfg):
     b = sample_config(cfg, rung="si1000", p=2e-3, shots=200, seed=42)
     assert np.array_equal(a.detectors, b.detectors)
     assert np.array_equal(a.observables, b.observables)
+
+
+def test_syndrome_rung_dem_matches_shipped_layout(cfg):
+    data = sample_config(cfg, rung="syndrome", p=2e-3, shots=500, seed=1234)
+    assert data.detectors.shape == (500, data.dem_si1000.num_detectors)
+    assert data.observables.shape == (500, data.dem_si1000.num_observables)
+    assert data.dem_si1000.num_detectors == data.circuit.num_detectors
+
+
+def test_syndrome_rung_probabilities_in_unit_interval(cfg):
+    data = sample_config(cfg, rung="syndrome", p=2e-3, shots=10, seed=1234)
+    for instr in data.dem_si1000.flattened():
+        if instr.type == "error":
+            prob = instr.args_copy()[0]
+            assert 0.0 <= prob <= 1.0
+
+
+def test_syndrome_rung_requires_detection_events():
+    with pytest.raises(ValueError):
+        build_rung_dem("syndrome", None, 2e-3)  # type: ignore[arg-type]
