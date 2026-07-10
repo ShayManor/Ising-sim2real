@@ -32,6 +32,16 @@ class WillowConfig:
     orientation: str       # patch location label, e.g. "q4_5"
 
 
+def patch_key(distance: int, orientation: str) -> str:
+    """Canonical patch identifier. ``orientation`` alone is NOT globally unique
+    -- e.g. ``"q6_7"`` is used by both a d3 patch and the d7 patch (see
+    ``slurm/eval_synth.sbatch``'s ``patches_for()``) -- so every patch-keyed
+    artifact (fitted-noise-model filenames, rung-dispatch lookups) must use this
+    combined key, never ``orientation`` by itself.
+    """
+    return f"d{distance}_{orientation}"
+
+
 @dataclass
 class WillowRun:
     """A loaded configuration: circuit, raw measurements, and reference DEMs."""

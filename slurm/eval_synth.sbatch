@@ -13,7 +13,7 @@ set -euo pipefail
 
 # =============================================================================
 # A SYNTHETIC row of the noise-fidelity ladder: one submission = one rung
-# (RUNG=uniform|si1000|syndrome). Same panel/scoring/sharding as eval_willow.sbatch, but
+# (RUNG=uniform|si1000|syndrome|fit). Same panel/scoring/sharding as eval_willow.sbatch, but
 # detectors/observables are SAMPLED from the rung's DEM instead of read off real
 # hardware (--source synth; see src/ising_sim2real/ingest/synthetic.py). This job
 # only PRODUCES RAW DATA -- rank stats (Kendall tau / Spearman / bootstrap) are a
@@ -44,7 +44,7 @@ set -euo pipefail
 REPO="${REPO:-${SLURM_SUBMIT_DIR:-$PWD}}"
 while [ "$REPO" != "/" ] && [ ! -e "$REPO/pyproject.toml" ]; do REPO="$(dirname "$REPO")"; done
 [ -e "$REPO/pyproject.toml" ] || { echo "ERROR: repo root (pyproject.toml) not found above ${SLURM_SUBMIT_DIR:-$PWD}; set REPO=/path/to/Ising-sim2real"; exit 1; }
-RUNG="${RUNG:?set RUNG=uniform|si1000|syndrome}"
+RUNG="${RUNG:?set RUNG=uniform|si1000|syndrome|fit}"
 OUTDIR="${OUTDIR:-/scratch/gautschi/manors/synth_${RUNG}}"  # results land here (NOT in git)
 # SYNTH_P only applies to RUNG=uniform (the syndrome rung has no scalar
 # parameter -- probabilities come from real Willow detection-event statistics).
@@ -76,7 +76,7 @@ RESUME="${RESUME:-0}"                                         # 1 = skip shards 
 OUTCOMES="${OUTCOMES:-1}"                                     # 1 = dump per-shot outcomes (.npz) for local stats
 OUTCOMES_DIR="${OUTCOMES_DIR:-$OUTDIR/outcomes}"
 
-case "$RUNG" in uniform|si1000|syndrome) : ;; *) echo "ERROR: RUNG='$RUNG' must be uniform|si1000|syndrome"; exit 1 ;; esac
+case "$RUNG" in uniform|si1000|syndrome|fit) : ;; *) echo "ERROR: RUNG='$RUNG' must be uniform|si1000|syndrome|fit"; exit 1 ;; esac
 
 # --- ONLY: restrict the plan to a single decoder (overwrite just its shards) ---
 if [ -n "$ONLY" ]; then

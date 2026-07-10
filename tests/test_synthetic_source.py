@@ -170,3 +170,82 @@ def test_syndrome_sampling_is_seed_reproducible(cfg):
         [instr.args_copy()[0] for instr in b.dem_si1000.flattened() if instr.type == "error"]
     )
     assert np.array_equal(a_probs, b_probs)
+
+
+def test_fit_rung_requires_patch():
+    with pytest.raises(ValueError):
+        build_rung_dem("fit", None, 2e-3)  # type: ignore[arg-type]
+
+
+def test_fit_rung_dem_matches_shipped_layout(cfg):
+    from ising_sim2real.ingest.willow import patch_key
+
+    fitted_dir = Path(__file__).resolve().parents[1] / "results" / "fitted_noise_models"
+    key = patch_key(cfg.distance, cfg.orientation)
+    if not (fitted_dir / f"{key}.json").exists():
+        pytest.skip(f"no fitted model for patch {key} -- run scripts/fit_noise_models.py first")
+    data = sample_config(cfg, rung="fit", p=2e-3, shots=500, seed=1234)
+    assert data.detectors.shape == (500, data.dem_si1000.num_detectors)
+    assert data.observables.shape == (500, data.dem_si1000.num_observables)
+
+
+def test_cli_accepts_fit_rung_choice(monkeypatch):
+    from ising_sim2real.eval import runner as runner_module
+    monkeypatch.setattr(runner_module, "evaluate", lambda args: [])
+    rc = runner_module.main(["--rung", "fit", "--source", "synth"])
+    assert rc == 1
+
+
+def test_fit_mwpm_reasonably_close_to_real_row(cfg):
+    """Validation gate for the fit rung: unlike the purely-synthetic rungs
+    (which must decode CLEANER than real hardware), a rung whose noise model is
+    FIT to be realistic should land close to the real row, not necessarily below
+    it -- see the design spec's Validation Gate section."""
+    from ising_sim2real.ingest.willow import patch_key
+
+    key = patch_key(cfg.distance, cfg.orientation)
+    fitted_path = Path(__file__).resolve().parents[1] / "results" / "fitted_noise_models" / f"{key}.json"
+    if not fitted_path.exists():
+        pytest.skip(f"{fitted_path} not present -- run scripts/fit_noise_models.py --patch {cfg.orientation} first")
+    if not REAL_ALL.exists():
+        pytest.skip(f"{REAL_ALL} not present locally")
+    if cfg.rounds not in (110, 130, 150, 170, 190, 210, 230, 250):
+        pytest.skip("fit rung validation only meaningful on eval-set (held-out) rounds")
+
+    data = sample_config(cfg, rung="fit", p=2e-3, shots=5000, seed=1234)
+    res = PyMatchingDecoder.from_dem(data.dem_si1000).decode_batch(data.detectors)
+    ler = logical_error_rate(res.predictions, data.observables)
+    assert 0.0 <= ler < 0.5
+    perc = logical_error_per_cycle(ler, cfg.rounds)
+
+    real_perc = []
+    with REAL_ALL.open(newline="") as f:
+        for row in csv.DictReader(f):
+            if (row["decoder"] == "mwpm" and int(row["distance"]) == cfg.distance
+                    and row["basis"] == cfg.basis and int(row["rounds"]) == cfg.rounds):
+                try:
+                    real_perc.append(float(row["ler_per_cycle"]))
+                except ValueError:
+                    continue
+    if not real_perc:
+        pytest.skip("no matching real-row mwpm rows to compare against")
+    # "Reasonably close" per the design spec: same order of magnitude, not a
+    # strict inequality like the idealized synthetic rungs.
+    ratio = perc / min(real_perc) if min(real_perc) > 0 else float("inf")
+    assert 0.1 <= ratio <= 10.0, (
+        f"fit-rung mwpm per-cycle LER {perc} vs real-row {min(real_perc)} "
+        f"(ratio {ratio}) -- outside the 'reasonably close' band"
+    )
+
+
+def test_fit_sampling_is_seed_reproducible(cfg):
+    from ising_sim2real.ingest.willow import patch_key
+
+    key = patch_key(cfg.distance, cfg.orientation)
+    fitted_path = Path(__file__).resolve().parents[1] / "results" / "fitted_noise_models" / f"{key}.json"
+    if not fitted_path.exists():
+        pytest.skip(f"{fitted_path} not present -- run scripts/fit_noise_models.py --patch {cfg.orientation} first")
+    a = sample_config(cfg, rung="fit", p=2e-3, shots=200, seed=42)
+    b = sample_config(cfg, rung="fit", p=2e-3, shots=200, seed=42)
+    assert np.array_equal(a.detectors, b.detectors)
+    assert np.array_equal(a.observables, b.observables)

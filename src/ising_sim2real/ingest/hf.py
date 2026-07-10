@@ -134,3 +134,21 @@ def load_config_from_hf(cfg: WillowConfig, repo: str = DEFAULT_HF_REPO) -> HFCon
         dem_si1000=_load_dem_gz(_download(repo, f"dems/{stem}.si1000.dem.gz")),
         dem_rl=_load_dem_gz(_download(repo, f"dems/{stem}.rl.dem.gz")),
     )
+
+
+def fetch_si1000_noisy_circuit(
+    cfg: WillowConfig, repo: str = DEFAULT_HF_REPO
+) -> stim.Circuit:
+    """Fetch the SI1000-noise-annotated circuit for ``cfg`` -- the template the
+    ``fit`` rung's noise injector rewrites (same instruction positions, new
+    per-role probabilities). Separate from ``load_config_from_hf`` since only the
+    ``fit`` rung's fitting/sampling path needs this artifact.
+    """
+    stem = _stem(cfg)
+    path = _download(repo, f"circuits/{stem}.si1000_noisy.stim")
+    if path is None:
+        raise FileNotFoundError(
+            f"circuits/{stem}.si1000_noisy.stim missing on {repo}; upload the "
+            "decoding bundle with `python scripts/publish_hf_dataset.py --bundle`."
+        )
+    return stim.Circuit.from_file(path)

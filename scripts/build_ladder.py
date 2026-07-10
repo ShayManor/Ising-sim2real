@@ -26,6 +26,7 @@ RESULTS = os.path.join(HERE, "results")
 RUNGS = [
     ("uniform", "willow_synth_uniform"),
     ("si1000", "willow_synth_si1000"),
+    ("fit", "willow_synth_fit"),
     ("syndrome", "willow_synth_syndrome"),
     ("real", "willow_real"),
 ]
@@ -113,8 +114,8 @@ def main() -> None:
         print_table(rung, agg)
 
     if "real" in tables:
-        for rung in ("uniform", "si1000"):
-            if rung in tables:
+        for rung, _ in RUNGS:
+            if rung != "real" and rung in tables:
                 rank_agreement(tables["real"], tables[rung], rung)
 
 

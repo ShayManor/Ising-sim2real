@@ -94,6 +94,9 @@ def build_bundle(staging: Path, configs: list[WillowConfig]) -> int:
         leaf = config_dir(WILLOW_RAW_DIR, cfg)
         stem = config_stem(cfg)
         shutil.copyfile(leaf / "circuit_ideal.stim", circuits / f"{stem}.stim")
+        noisy_src = leaf / "circuit_noisy_si1000.stim"
+        if noisy_src.exists():
+            shutil.copyfile(noisy_src, circuits / f"{stem}.si1000_noisy.stim")
         for pathway, tag in ((_SI1000_PATHWAY, "si1000"), (_RL_PATHWAY, "rl")):
             src = leaf / "decoding_results" / pathway / "error_model.dem"
             if not src.exists():
@@ -197,6 +200,8 @@ Alongside the detection events, each config ships the inputs a decoder panel nee
 keyed by the same `<stem>` (`d{{D}}_at_{{orient}}__{{basis}}__r{{rounds:03d}}`):
 
 - `circuits/<stem>.stim` — the ideal (noiseless) annotated circuit.
+- `circuits/<stem>.si1000_noisy.stim` — the SI1000-noise-annotated circuit (same
+  instruction positions the `fit` rung's noise injector rewrites).
 - `dems/<stem>.si1000.dem.gz` — shipped SI1000 detector error model (gzipped).
 - `dems/<stem>.rl.dem.gz` — shipped RL-optimized detector error model (gzipped).
 

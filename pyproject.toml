@@ -50,6 +50,10 @@ packages = ["src/ising_sim2real"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Makes `scripts.*` importable from tests under bare `uv run pytest`, matching
+# the sys.path behavior `python -m pytest` already gets for free (rootdir on
+# sys.path). Needed by tests/test_hf_publish.py's `import scripts.publish_hf_dataset`.
+pythonpath = ["."]
 
 # Torch wheels: CUDA 12.4 build on Linux (GPU clusters), default PyPI wheel
 # (CPU/MPS) everywhere else. Change cu124 -> cu121/cu128 to match the cluster's
