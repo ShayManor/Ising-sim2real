@@ -200,18 +200,27 @@ def test_fit_mwpm_reasonably_close_to_real_row(cfg):
     """Validation gate for the fit rung: unlike the purely-synthetic rungs
     (which must decode CLEANER than real hardware), a rung whose noise model is
     FIT to be realistic should land close to the real row, not necessarily below
-    it -- see the design spec's Validation Gate section."""
-    from ising_sim2real.ingest.willow import patch_key
+    it -- see the design spec's Validation Gate section.
 
-    key = patch_key(cfg.distance, cfg.orientation)
+    Deliberately does NOT reuse the shared ``cfg`` fixture's round count (r10,
+    a FIT-set round -- see fit_noise_models.py's FIT_ROUNDS): asserting the
+    validation gate on a fit-set round would be circular (that round's real
+    data was already used to fit the model). Builds a fresh config at the same
+    patch/basis but an EVAL-set (held-out) round instead, so this test can
+    actually exercise the gate rather than structurally always skip.
+    """
+    from ising_sim2real.ingest.willow import WillowConfig, patch_key
+
+    eval_cfg = WillowConfig(distance=cfg.distance, basis=cfg.basis, rounds=110, orientation=cfg.orientation)
+
+    key = patch_key(eval_cfg.distance, eval_cfg.orientation)
     fitted_path = Path(__file__).resolve().parents[1] / "results" / "fitted_noise_models" / f"{key}.json"
     if not fitted_path.exists():
-        pytest.skip(f"{fitted_path} not present -- run scripts/fit_noise_models.py --patch {cfg.orientation} first")
+        pytest.skip(f"{fitted_path} not present -- run scripts/fit_noise_models.py --patch {eval_cfg.orientation} first")
     if not REAL_ALL.exists():
         pytest.skip(f"{REAL_ALL} not present locally")
-    if cfg.rounds not in (110, 130, 150, 170, 190, 210, 230, 250):
-        pytest.skip("fit rung validation only meaningful on eval-set (held-out) rounds")
 
+    cfg = eval_cfg
     data = sample_config(cfg, rung="fit", p=2e-3, shots=5000, seed=1234)
     res = PyMatchingDecoder.from_dem(data.dem_si1000).decode_batch(data.detectors)
     ler = logical_error_rate(res.predictions, data.observables)

@@ -83,7 +83,13 @@ def build_rung_dem(
         # approximate_disjoint_errors=True is REQUIRED once PAULI_CHANNEL_2
         # sites exist (confirmed directly against stim during Task 3 -- every
         # fitted model has nonzero 2Q-gate params, so this always applies here).
-        return noisy_circuit.detector_error_model(approximate_disjoint_errors=True)
+        # decompose_errors=True is ALSO required: beliefmatching's DEM->check-matrix
+        # conversion raises on any hyperedge that isn't decomposed into a ``^``-
+        # separated matching-graph hint (found live on the production sweep --
+        # 188 beliefmatching shard failures across the fit rung before this fix;
+        # confirmed locally that adding this flag alone resolves it, with no
+        # change to the underlying event probabilities/graph, just added hints).
+        return noisy_circuit.detector_error_model(approximate_disjoint_errors=True, decompose_errors=True)
     raise ValueError(f"unknown rung {rung!r}; choose from {RUNGS}")
 
 

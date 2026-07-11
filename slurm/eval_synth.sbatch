@@ -123,18 +123,30 @@ if [ -n "$MODELS" ] && { [ ! -d third_party/Ising-Decoding/code ] || ! have_isin
 fi
 
 # --- prefetch circuits+DEMs for every config (small; avoids 32 shards racing
-# on first access -- huggingface_hub caches per-file, this just warms it once). ---
+# on first access -- huggingface_hub caches per-file, this just warms it once).
+# RUNG=fit additionally needs data/<stem>.parquet (real detection events, via
+# load_config_from_hf) and circuits/<stem>.si1000_noisy.stim (the noisy-circuit
+# template, via fetch_si1000_noisy_circuit) -- both prefetched here too when
+# RUNG=fit, otherwise the SAME 32-shard cold-cache race this prefetch step
+# exists to avoid recurs on exactly those two file types (observed live:
+# 2026-07-11, job 13408854 stalled near-total for 2.5h+ with ~0% CPU across
+# all workers, root-caused to lock contention on these two never-prefetched
+# per-config artifacts, not a decoder/algorithm bug). ---
 echo "prefetching circuits+DEMs from $HF_REPO into $HF_HOME ..."
-uv run python - "$HF_REPO" <<'PY'
+uv run python - "$HF_REPO" "$RUNG" <<'PY'
 import sys
 from ising_sim2real.ingest.hf import discover_configs_hf, _download, _stem
 repo = sys.argv[1]
+rung = sys.argv[2]
 configs = discover_configs_hf(repo)
 for cfg in configs:
     stem = _stem(cfg)
     _download(repo, f"circuits/{stem}.stim")
     _download(repo, f"dems/{stem}.si1000.dem.gz")
-print(f"prefetched {len(configs)} configs' circuits+DEMs")
+    if rung == "fit":
+        _download(repo, f"data/{stem}.parquet")
+        _download(repo, f"circuits/{stem}.si1000_noisy.stim")
+print(f"prefetched {len(configs)} configs' circuits+DEMs" + (" +fit-rung artifacts" if rung == "fit" else ""))
 PY
 
 WALL0=$(date +%s)
