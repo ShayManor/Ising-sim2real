@@ -64,3 +64,19 @@ def test_fitted_models_dir_override(tmp_path, monkeypatch):
     nm = synthetic._load_fitted_noise_model("d3_q4_5")
     assert nm.p_cnot_IX == pytest.approx(0.006)
     assert nm.p_meas_Z == pytest.approx(0.004)
+
+
+def test_explicit_models_dir_beats_env(tmp_path, monkeypatch):
+    """2x2 decomposition contract: an explicit models_dir loads the prior from a
+    different dir than FITTED_MODELS_DIR (the sampling source)."""
+    from ising_sim2real.ingest import synthetic
+    source, prior = tmp_path / "source", tmp_path / "prior"
+    source.mkdir(); prior.mkdir()
+    (source / "d3_q4_5.json").write_text(json.dumps(BASE))
+    (prior / "d3_q4_5.json").write_text(json.dumps({**BASE, "p_meas_Z": 0.099}))
+    monkeypatch.setenv("FITTED_MODELS_DIR", str(source))
+    # no models_dir -> env (source)
+    assert synthetic._load_fitted_noise_model("d3_q4_5").p_meas_Z == pytest.approx(0.004)
+    # explicit models_dir (prior) overrides the env
+    nm = synthetic._load_fitted_noise_model("d3_q4_5", models_dir=str(prior))
+    assert nm.p_meas_Z == pytest.approx(0.099)

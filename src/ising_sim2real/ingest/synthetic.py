@@ -25,6 +25,7 @@ tree; only the *source* of detectors/observables differs from ``load_config_from
 
 from __future__ import annotations
 
+import os
 import zlib
 
 import numpy as np
@@ -61,8 +62,13 @@ def build_rung_dem(
     detection_events: np.ndarray | None = None,
     patch: str | None = None,
     circuit_noisy_template: stim.Circuit | None = None,
+    models_dir: str | None = None,
 ) -> stim.DetectorErrorModel:
-    """Build the DEM a rung samples from and decodes with (matched-prior)."""
+    """Build the DEM a rung samples from and decodes with (matched-prior).
+
+    ``models_dir`` (fit rung only) overrides FITTED_MODELS_DIR for this DEM; the
+    2x2 decomposition uses it to build a decode prior from a different model dir
+    than the sampling source."""
     if rung == "si1000":
         return dem_si1000
     if rung == "uniform":
@@ -78,7 +84,7 @@ def build_rung_dem(
             raise ValueError("rung='fit' requires patch and circuit_noisy_template")
         from ising_sim2real.ingest.noise_injector import inject_noise_model
 
-        noise = _load_fitted_noise_model(patch)
+        noise = _load_fitted_noise_model(patch, models_dir=models_dir)
         noisy_circuit = inject_noise_model(circuit_noisy_template, noise)
         # approximate_disjoint_errors=True is REQUIRED once PAULI_CHANNEL_2
         # sites exist (confirmed directly against stim during Task 3 -- every
@@ -99,7 +105,7 @@ def _seed_for(cfg: WillowConfig, base_seed: int) -> int:
     return (base_seed + zlib.crc32(_stem(cfg).encode())) & 0x7FFFFFFF
 
 
-def _load_fitted_noise_model(patch: str):
+def _load_fitted_noise_model(patch: str, models_dir: str | None = None):
     import json
     import os
     import sys
@@ -109,10 +115,12 @@ def _load_fitted_noise_model(patch: str):
 
     # FITTED_MODELS_DIR lets the RQ3 sensitivity sweep point the fit rung at a
     # directory of perturbed per-patch models (one overestimated parameter each)
-    # instead of the baseline fit; unset -> the baseline fitted models.
-    override = os.environ.get("FITTED_MODELS_DIR")
-    models_dir = Path(override) if override else REPO_ROOT / "results" / "fitted_noise_models"
-    path = models_dir / f"{patch}.json"
+    # instead of the baseline fit; unset -> the baseline fitted models. An explicit
+    # ``models_dir`` (used by the 2x2 prior/channel decomposition) overrides it, so
+    # the sampling source and the decode prior can be loaded from different dirs.
+    override = models_dir or os.environ.get("FITTED_MODELS_DIR")
+    base = Path(override) if override else REPO_ROOT / "results" / "fitted_noise_models"
+    path = base / f"{patch}.json"
     if not path.exists():
         raise FileNotFoundError(
             f"{path} missing -- run `python scripts/fit_noise_models.py --patch "
@@ -154,11 +162,26 @@ def sample_config(
         real = load_config_from_hf(cfg, repo=repo)
         circuit = real.circuit
         template = fetch_si1000_noisy_circuit(cfg, repo=repo)
+        patch = patch_key(cfg.distance, cfg.orientation)
         rung_dem = build_rung_dem(
             rung, real.dem_si1000, p,
-            patch=patch_key(cfg.distance, cfg.orientation),
-            circuit_noisy_template=template,
+            patch=patch, circuit_noisy_template=template,
         )
+        # 2x2 prior/channel decomposition: sample from FITTED_MODELS_DIR (the
+        # syndrome source) but decode with a prior built from PRIOR_MODELS_DIR
+        # (a different model dir) -> off-diagonal source/prior-mismatch cell.
+        prior_dir = os.environ.get("PRIOR_MODELS_DIR")
+        if prior_dir:
+            prior_dem = build_rung_dem(
+                rung, real.dem_si1000, p, patch=patch,
+                circuit_noisy_template=template, models_dir=prior_dir,
+            )
+            sampler = rung_dem.compile_sampler(seed=_seed_for(cfg, seed))
+            detectors, observables, _ = sampler.sample(shots=shots)
+            return HFConfigData(
+                circuit=circuit, detectors=detectors, observables=observables,
+                dem_si1000=prior_dem, dem_rl=None,
+            )
     else:
         stem = _stem(cfg)
         circuit_path = _download(repo, f"circuits/{stem}.stim")
