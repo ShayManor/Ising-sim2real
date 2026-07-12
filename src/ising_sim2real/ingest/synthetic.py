@@ -101,11 +101,18 @@ def _seed_for(cfg: WillowConfig, base_seed: int) -> int:
 
 def _load_fitted_noise_model(patch: str):
     import json
+    import os
     import sys
+    from pathlib import Path
 
     from ising_sim2real.paths import ISING_CODE, REPO_ROOT
 
-    path = REPO_ROOT / "results" / "fitted_noise_models" / f"{patch}.json"
+    # FITTED_MODELS_DIR lets the RQ3 sensitivity sweep point the fit rung at a
+    # directory of perturbed per-patch models (one overestimated parameter each)
+    # instead of the baseline fit; unset -> the baseline fitted models.
+    override = os.environ.get("FITTED_MODELS_DIR")
+    models_dir = Path(override) if override else REPO_ROOT / "results" / "fitted_noise_models"
+    path = models_dir / f"{patch}.json"
     if not path.exists():
         raise FileNotFoundError(
             f"{path} missing -- run `python scripts/fit_noise_models.py --patch "

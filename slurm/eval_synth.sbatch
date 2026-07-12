@@ -58,6 +58,10 @@ MODELS="${MODELS:-fast accurate}"                            # ising model varia
 ONLY="${ONLY:-}"                                             # run just this one decoder
 # Expensive decoders capped by rounds -- see eval_willow.sbatch for rationale.
 MAX_ROUNDS="${MAX_ROUNDS:-30}"                                # conservative default to fit 12h/64cpu (spec S5)
+# ROUNDS overrides rounds_le() with an exact list (space-separated), e.g. to target
+# only the fit rung's held-out eval-set rounds (110-250) without also re-running the
+# fit-set rounds MAX_ROUNDS would otherwise include as a 1..N upper bound.
+ROUNDS="${ROUNDS:-}"
 NPAR="${NPAR:-32}"                                            # concurrent shards, <=64 cores / >=1 core each
 SLOW_SHOTS="${SLOW_SHOTS:-5000}"                              # fewer SAMPLED shots for the slow decoders
 # beliefmatching is included here (unlike eval_willow.sbatch's original default) --
@@ -161,7 +165,8 @@ patches_for () { case "$1" in
   7) echo "q6_7" ;;
 esac; }
 STD_ROUNDS="1 10 13 30 50 70 90 110 130 150 170 190 210 230 250"
-rounds_le () { for r in $STD_ROUNDS; do { [ -z "$MAX_ROUNDS" ] || [ "$r" -le "$MAX_ROUNDS" ]; } && echo "$r"; done; }
+rounds_le () { if [ -n "$ROUNDS" ]; then for r in $ROUNDS; do echo "$r"; done; return; fi
+  for r in $STD_ROUNDS; do { [ -z "$MAX_ROUNDS" ] || [ "$r" -le "$MAX_ROUNDS" ]; } && echo "$r"; done; }
 
 oc_flag=(); [ "$OUTCOMES" = 1 ] && oc_flag=(--outcomes-dir "$OUTCOMES_DIR")
 run_shard () {  # $1=tag $2=out.csv $3=synth-shots  $4..=ising-eval args
@@ -202,7 +207,9 @@ dispatch () {  # $1="kind:name:d:b:patch:round" -- subshell so thread env is per
   export OMP_NUM_THREADS="$STHREADS" MKL_NUM_THREADS="$STHREADS"
   case "$kind" in
     isg)
-      local mr=(); [ -n "$MAX_ROUNDS" ] && mr=(--max-rounds "$MAX_ROUNDS")
+      local mr=()
+      if [ -n "$ROUNDS" ]; then mr=(--rounds "$(echo "$ROUNDS" | tr ' ' ',')")
+      elif [ -n "$MAX_ROUNDS" ]; then mr=(--max-rounds "$MAX_ROUNDS"); fi
       run_shard "isg d$d$b/$p/$name" "$OUTDIR/ising_${name}_d${d}_${b}_${p}.csv" "$SYNTH_SHOTS" \
         --decoders ising --model "$name" --distances "$d" --bases "$b" --patches "$p" \
         ${mr[@]+"${mr[@]}"} ;;
@@ -210,7 +217,9 @@ dispatch () {  # $1="kind:name:d:b:patch:round" -- subshell so thread env is per
       run_shard "$name d$d$b/$p/r$r" "$OUTDIR/${name}_d${d}_${b}_${p}_r${r}.csv" "$SLOW_SHOTS" \
         --decoders "$name" --distances "$d" --bases "$b" --patches "$p" --rounds "$r" ;;
     cls)
-      local mr=(); if [ -n "$MAX_ROUNDS" ] && is_expensive "$name"; then mr=(--max-rounds "$MAX_ROUNDS"); fi
+      local mr=()
+      if [ -n "$ROUNDS" ]; then mr=(--rounds "$(echo "$ROUNDS" | tr ' ' ',')")
+      elif [ -n "$MAX_ROUNDS" ] && is_expensive "$name"; then mr=(--max-rounds "$MAX_ROUNDS"); fi
       run_shard "$name d$d$b/$p" "$OUTDIR/${name}_d${d}_${b}_${p}.csv" "$SYNTH_SHOTS" \
         --decoders "$name" --distances "$d" --bases "$b" --patches "$p" \
         ${mr[@]+"${mr[@]}"} ;;

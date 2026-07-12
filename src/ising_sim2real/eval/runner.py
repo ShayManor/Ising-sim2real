@@ -90,6 +90,25 @@ class EvalRow:
 
 
 def _select_configs(args) -> list[WillowConfig]:
+    if (
+        args.source in ("hf", "synth")
+        and args.distances and len(args.distances) == 1
+        and args.bases and len(args.bases) == 1
+        and args.patches and len(args.patches) == 1
+        and args.rounds
+    ):
+        # Every field already pins an exact config -- skip the full-repo listing
+        # call entirely. Sharded production runs dispatch thousands of single-
+        # config shards concurrently; each doing its own discover_configs_hf()
+        # listing call bursts past HF Hub's rate limit (429s observed live,
+        # 2026-07-11: 355/756 shards on one job silently failed this way).
+        configs = [
+            WillowConfig(distance=args.distances[0], basis=args.bases[0],
+                         rounds=r, orientation=args.patches[0])
+            for r in args.rounds
+        ]
+        return configs[: args.limit] if args.limit is not None else configs
+
     if args.source in ("hf", "synth"):
         from ising_sim2real.ingest.hf import discover_configs_hf
 
