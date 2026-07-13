@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import zlib
 
 from ising_sim2real.ingest.hf import (
     DEFAULT_HF_REPO,
@@ -31,7 +32,7 @@ from ising_sim2real.ingest.hf import (
     fetch_si1000_noisy_circuit,
     load_config_from_hf,
 )
-from ising_sim2real.ingest.param_fit import fit_noise_model
+from ising_sim2real.ingest.param_fit import fit_noise_model, resample_shots
 from ising_sim2real.ingest.willow import WillowConfig, patch_key
 from ising_sim2real.paths import ISING_CODE, REPO_ROOT
 
@@ -70,12 +71,13 @@ def _ensure_noise_model_cls():
     return NoiseModel
 
 
-def fit_one_patch(orientation: str, distance: int, repo: str = DEFAULT_HF_REPO) -> dict:
+def fit_one_patch(orientation: str, distance: int, repo: str = DEFAULT_HF_REPO,
+                  draw: int | None = None) -> dict:
     """Fit against the patch's fit-set configs' real detection events, one
     circuit/DEM/detection-events triple per config (different round counts
     have structurally different circuits and detector counts -- each config
     needs its OWN template and DEM, not a shared one), return the fitted
-    NoiseModel's canonical parameter dict."""
+    NoiseModel's canonical parameter dict. When ``draw`` is set, each config's detectors are shot-resampled first -- the joint-bootstrap refit."""
     NoiseModel = _ensure_noise_model_cls()
     configs = fit_set_configs_for_patch(orientation, distance)
 
@@ -83,7 +85,12 @@ def fit_one_patch(orientation: str, distance: int, repo: str = DEFAULT_HF_REPO) 
     for cfg in configs:
         data = load_config_from_hf(cfg, repo=repo)
         template = fetch_si1000_noisy_circuit(cfg, repo=repo)
-        per_config.append((data.dem_si1000, template, data.detectors))
+        detectors = data.detectors
+        if draw is not None:
+            basis_int = 0 if cfg.basis == "X" else 1
+            detectors = resample_shots(detectors, [draw, distance, cfg.rounds, basis_int,
+                                                    zlib.crc32(orientation.encode())])
+        per_config.append((data.dem_si1000, template, detectors))
 
     init = NoiseModel.from_single_p(0.002)
     fitted = fit_noise_model(per_config, init)

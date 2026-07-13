@@ -23,6 +23,20 @@ from scipy.optimize import minimize
 
 from ising_sim2real.paths import ISING_CODE
 
+
+def resample_shots(detection_events: "np.ndarray", seed) -> "np.ndarray":
+    """With-replacement bootstrap resample of the SHOT rows of a
+    ``(shots, num_detectors)`` detection-events array. ``seed`` is any
+    ``np.random.default_rng``-acceptable seed (the joint-bootstrap caller passes
+    ``[draw, distance, rounds, basis_int, crc32(orientation)]`` so each config's resample is
+    deterministic and independent -- across rounds, basis, AND patch). Returns a new array of identical shape and
+    dtype -- the outer bootstrap draws that ``fit_noise_model`` then fits to."""
+    rng = np.random.default_rng(seed)
+    n_shots = detection_events.shape[0]
+    idx = rng.integers(0, n_shots, size=n_shots)
+    return detection_events[idx]
+
+
 # Forward-difference step for the parallel finite-difference gradient built by
 # `fit_noise_model` below -- matches `scipy.optimize.minimize`'s own default
 # `eps` option for L-BFGS-B's numerical jacobian (used when no `jac=` is

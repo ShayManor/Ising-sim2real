@@ -20,10 +20,34 @@ from collections import defaultdict
 
 from scipy.stats import kendalltau
 
+from scripts.build_selection import bootstrap_prefers, load_cells
+
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESULTS = os.path.join(HERE, "results")
-SWEEP = os.path.join(RESULTS, "sensitivity")
+# SWEEP_DIR lets the same analysis run over a multi-round / underestimate sweep
+# (e.g. results/sensitivity_r10) instead of the default r30 sweep.
+SWEEP = os.environ.get("SWEEP_DIR", os.path.join(RESULTS, "sensitivity"))
 REAL_DIR = os.path.join(RESULTS, "willow_real")
+
+
+def significant_inversions(base_counts, pert_counts, base_by, pert_by, dist) -> int:
+    """Of the decoder pairs that swap order between baseline and a perturbed
+    setting, how many are REAL swaps -- both orderings bootstrap-significant (95%
+    CI excludes a tie), not near-ties. Filters the reviewer's 'CI includes a tie'
+    case out of the raw inversion count."""
+    b, s = base_by.get(dist, {}), pert_by.get(dist, {})
+    shared = sorted(set(b) & set(s))
+    n = 0
+    for i in range(len(shared)):
+        for j in range(i + 1, len(shared)):
+            di, dj = shared[i], shared[j]
+            if (b[di] < b[dj]) == (s[di] < s[dj]):
+                continue  # not swapped
+            rb = bootstrap_prefers(base_counts, di, dj, dist)
+            rs = bootstrap_prefers(pert_counts, di, dj, dist)
+            if rb and rs and (rb[1] > 0 or rb[2] < 0) and (rs[1] > 0 or rs[2] < 0):
+                n += 1
+    return n
 
 
 def _label(row: dict) -> str:
@@ -106,6 +130,9 @@ def main() -> None:
     baseline = aggs["baseline"]
     real = aggregate(_load_rows(REAL_DIR)) if os.path.isdir(REAL_DIR) else {}
     dists = sorted({d for (_dec, d) in baseline}, key=int)
+    # per-config counts for bootstrap-gating the inversions (near-tie filter)
+    counts = {s: load_cells(os.path.join(SWEEP, s))[1] for s in settings}
+    base_by = _per_distance(baseline)
 
     def tau_vs_real(agg) -> dict[str, float]:
         out = {}
@@ -121,26 +148,31 @@ def main() -> None:
 
     print(f"baseline-fit ranking vs real (Kendall tau): "
           + "  ".join(f"d{d}={base_real.get(d, float('nan')):.3f}" for d in dists))
-    print(f"\n{'param':<16}" + "".join(f"  d{d}:tau/inv" for d in dists) + "   disruption")
-    print("-" * (16 + 12 * len(dists) + 12))
+    print(f"\n{'param':<16}" + "".join(f"  d{d}:tau/inv(sig)" for d in dists)
+          + "   disruption (sig=bootstrap-real swaps)")
+    print("-" * (16 + 16 * len(dists) + 12))
 
     scored = []
     for s in settings:
         if s == "baseline":
             continue
-        cells, total_inv = [], 0
+        cells, total_inv, total_sig = [], 0, 0
+        pert_by = _per_distance(aggs[s])
         for d in dists:
             c = compare(aggs[s], baseline, d)
             if c is None:
-                cells.append(f"  {'-':>9}")
+                cells.append(f"  {'-':>13}")
                 continue
             tau, inv, _top1, _n = c
+            sig = significant_inversions(counts["baseline"], counts[s],
+                                         base_by, pert_by, d) if inv else 0
             total_inv += inv
-            cells.append(f"  {tau:+.2f}/{inv:<2d}")
-        scored.append((total_inv, s, cells))
+            total_sig += sig
+            cells.append(f"  {tau:+.2f}/{inv}({sig})")
+        scored.append((total_inv, total_sig, s, cells))
 
-    for total_inv, s, cells in sorted(scored, reverse=True):
-        print(f"{s:<16}" + "".join(cells) + f"   {total_inv:>3d} inv")
+    for total_inv, total_sig, s, cells in sorted(scored, reverse=True):
+        print(f"{s:<16}" + "".join(cells) + f"   {total_inv:>2d} inv {total_sig:>2d} sig")
 
     _make_figure(scored, dists)
 
@@ -154,12 +186,15 @@ def _make_figure(scored, dists) -> None:
         print("\n(matplotlib not available; skipping figure)")
         return
     scored = sorted(scored)  # ascending so most-disruptive is at the top of a barh
-    params = [s for _inv, s, _c in scored]
-    vals = [inv for inv, _s, _c in scored]
+    params = [s for _inv, _sig, s, _c in scored]
+    vals = [inv for inv, _sig, _s, _c in scored]
+    sigs = [sig for _inv, sig, _s, _c in scored]
     fig, ax = plt.subplots(figsize=(6, max(3, 0.32 * len(params))))
-    colors = ["#c0392b" if v > 0 else "#bdc3c7" for v in vals]
+    # red = at least one bootstrap-real swap; grey = swaps but all near-ties; light = none
+    colors = ["#c0392b" if sg > 0 else "#95a5a6" if v > 0 else "#ecf0f1"
+              for v, sg in zip(vals, sigs)]
     ax.barh(params, vals, color=colors)
-    ax.set_xlabel("ranking inversions vs baseline fit (summed over distances)")
+    ax.set_xlabel("ranking inversions vs baseline fit (red = bootstrap-real swap)")
     ax.set_title("RQ3: parameter mischaracterization vs decoder ranking")
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
