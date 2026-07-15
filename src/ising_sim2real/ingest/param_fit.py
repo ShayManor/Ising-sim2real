@@ -180,7 +180,10 @@ def _params_to_vector(noise) -> "np.ndarray":
 
 
 def _vector_to_dict(vec: "np.ndarray", order: list[str]) -> dict[str, float]:
-    d = {name: float(v) for name, v in zip(order, vec)}
+    # Clamp to the [0, 1] box bounds: L-BFGS-B can return a value a float ULP past
+    # a bound (e.g. p_meas 1.00000001), which NoiseModel.validate() rejects. The
+    # overshoot is FP noise, not signal, so clamping is exact, not a fudge.
+    d = {name: float(min(1.0, max(0.0, v))) for name, v in zip(order, vec)}
     d["p_prep_X"] = d["p_prep_Z"]
     d["p_meas_X"] = d["p_meas_Z"]
     return d

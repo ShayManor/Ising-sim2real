@@ -112,9 +112,13 @@ def main() -> None:
         print(f"  -> {cov_png}")
 
     # ---- rank-flip vs point-estimate fit ----
+    # Baseline = the point-estimate fit at the SAME operating point the draws use
+    # (RQ3's r30 fit-rung baseline). results/willow_synth_fit is the full-ladder
+    # run (r1..r250) whose high-round rows saturate to LER 0.5 and inflate the
+    # per-decoder mean, so it is NOT comparable to the r30-only draws.
     draw_dirs = sorted(glob.glob(os.path.join(EVAL, "draw_*")))
     draw_aggs = [aggregate(_load_rows(d)) for d in draw_dirs]
-    base_dir = os.path.join(RESULTS, "willow_synth_fit")
+    base_dir = os.path.join(RESULTS, "sensitivity", "baseline")
     baseline_agg = aggregate(_load_rows(base_dir)) if os.path.isdir(base_dir) else (draw_aggs[0] if draw_aggs else {})
     dists = sorted({d for (_dec, d) in baseline_agg}, key=int)
     print(f"\n{'dist':<6}{'top1-stable':<14}{'mwpm<->bplsd flip':<20}{'any-flip'}")

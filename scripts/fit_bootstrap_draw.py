@@ -23,6 +23,21 @@ from scripts.fit_noise_models import _all_patches, fit_one_patch
 OUT_ROOT = REPO_ROOT / "results" / "bootstrap" / "models"
 
 
+def _patches(repo: str = DEFAULT_HF_REPO) -> list[tuple[str, int]]:
+    """Index-decoding patch list. Reads ``OUT_ROOT/patches.json`` if present so
+    array tiles need NO HuggingFace listing API call -- the per-tile
+    ``list_repo_files`` was 429-ing at 16-way concurrency, and this makes the
+    tile path ``HF_HUB_OFFLINE``-safe. Otherwise queries HF once and caches it;
+    pre-generate the cache online (one call) before launching an offline array."""
+    cache = OUT_ROOT / "patches.json"
+    if cache.exists():
+        return [(o, d) for o, d in json.loads(cache.read_text())]
+    patches = _all_patches(repo)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(patches))
+    return patches
+
+
 def tile(index: int, patches: list[tuple[str, int]]) -> tuple[int, str, int]:
     """Array index -> (draw, orientation, distance). Patches cycle fastest so
     every draw is a contiguous block of NPATCH tasks."""
@@ -33,7 +48,7 @@ def tile(index: int, patches: list[tuple[str, int]]) -> tuple[int, str, int]:
 
 
 def run_index(index: int, repo: str = DEFAULT_HF_REPO, resume: bool = False) -> None:
-    draw, orientation, distance = tile(index, _all_patches(repo))
+    draw, orientation, distance = tile(index, _patches(repo))
     key = patch_key(distance, orientation)
     out_dir = OUT_ROOT / f"draw_{draw:02d}"
     out_dir.mkdir(parents=True, exist_ok=True)
