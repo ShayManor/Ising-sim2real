@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from ising_sim2real.paths import ISING_CODE
 from scripts.gen_sensitivity_models import (
     FREE_PARAMS,
     load_baseline_models,
@@ -57,6 +58,7 @@ def test_generate_and_reload_roundtrips(tmp_path):
     assert reloaded["d3_q4_5"] == BASE
 
 
+@pytest.mark.skipif(not ISING_CODE.exists(), reason="vendored Ising-Decoding code absent")
 def test_fitted_models_dir_override(tmp_path, monkeypatch):
     from ising_sim2real.ingest import synthetic
     (tmp_path / "d3_q4_5.json").write_text(json.dumps(BASE))
@@ -66,6 +68,7 @@ def test_fitted_models_dir_override(tmp_path, monkeypatch):
     assert nm.p_meas_Z == pytest.approx(0.004)
 
 
+@pytest.mark.skipif(not ISING_CODE.exists(), reason="vendored Ising-Decoding code absent")
 def test_explicit_models_dir_beats_env(tmp_path, monkeypatch):
     """2x2 decomposition contract: an explicit models_dir loads the prior from a
     different dir than FITTED_MODELS_DIR (the sampling source)."""

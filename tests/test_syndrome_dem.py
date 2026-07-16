@@ -437,18 +437,29 @@ def test_e2e_pipeline_pinned_exact_values():
     # shots on the plan's verified graphlike toy DEM) via a companion
     # script -- not guessed. Any future change that alters so much as the
     # last bit of a float here must consciously update this test.
+    #
+    # The events are sampled with numpy rather than dem.compile_sampler(seed=):
+    # Stim only guarantees a seeded stream on the same machine AND the same Stim
+    # version (SIMD width changes it), so exact floats pinned downstream of it
+    # hold on the machine that captured them and fail elsewhere. numpy's PCG64
+    # stream is guaranteed across platforms, and the estimator's own bootstrap is
+    # already PCG64-seeded, which makes the whole pipeline portable-deterministic.
     dem_text = "error(0.05) D0 D1\nerror(0.03) D1 D2\nerror(0.01) D0\nerror(0.02) D2\n"
     dem = stim.DetectorErrorModel(dem_text)
-    sampler = dem.compile_sampler(seed=123)
-    dets, _obs, _ = sampler.sample(shots=10_000)
+    rng = np.random.default_rng(123)
+    dets = np.zeros((10_000, 3), dtype=bool)
+    for p, support in [(0.05, (0, 1)), (0.03, (1, 2)), (0.01, (0,)), (0.02, (2,))]:
+        fired = rng.random(10_000) < p
+        for d in support:
+            dets[fired, d] ^= True
 
     estimated = estimate_dem_from_syndromes(dem, dets)
     probs = _estimated_probs(estimated)
 
-    assert probs[frozenset({0, 1})] == 0.04674344738358566
-    assert probs[frozenset({1, 2})] == 0.02958472762548975
-    assert probs[frozenset({0})] == 0.008777096073388613
-    assert probs[frozenset({2})] == 0.017553928777807593
+    assert probs[frozenset({0, 1})] == 0.04904926761371853
+    assert probs[frozenset({1, 2})] == 0.02748009793915457
+    assert probs[frozenset({0})] == 0.010589551918168683
+    assert probs[frozenset({2})] == 0.02150163619799117
 
 
 def test_e2e_pipeline_no_hidden_nondeterminism():

@@ -70,6 +70,8 @@ from ising_sim2real.paths import ISING_CODE
 
 
 def _noise_model_cls():
+    if not ISING_CODE.exists():
+        pytest.skip("vendored Ising-Decoding code absent")
     p = str(ISING_CODE)
     if p not in sys.path:
         sys.path.insert(0, p)

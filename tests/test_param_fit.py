@@ -306,6 +306,8 @@ def test_fit_noise_model_recovers_known_ground_truth():
     from ising_sim2real.paths import ISING_CODE
     import sys
 
+    if not ISING_CODE.exists():
+        pytest.skip("vendored Ising-Decoding code absent")
     p = str(ISING_CODE)
     if p not in sys.path:
         sys.path.insert(0, p)
@@ -369,6 +371,8 @@ def test_fit_converges_across_representative_regimes(label, overrides):
     from ising_sim2real.paths import ISING_CODE
     import sys
 
+    if not ISING_CODE.exists():
+        pytest.skip("vendored Ising-Decoding code absent")
     p = str(ISING_CODE)
     if p not in sys.path:
         sys.path.insert(0, p)
@@ -461,6 +465,8 @@ def test_fit_noise_model_handles_multiple_configs_with_different_detector_counts
     from ising_sim2real.paths import ISING_CODE
     import sys
 
+    if not ISING_CODE.exists():
+        pytest.skip("vendored Ising-Decoding code absent")
     p = str(ISING_CODE)
     if p not in sys.path:
         sys.path.insert(0, p)
