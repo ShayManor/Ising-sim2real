@@ -1,0 +1,2 @@
+distance,basis,orientation,rounds,decoder,model,shots,n_errors,ler,ler_per_cycle,decode_seconds,note
+5,Z,q4_7,30,tesseract,-,5000,515,0.103,0.003829787692178843,1617.9116285019554,

@@ -221,9 +221,10 @@ __marimo__/
 # Vendored NVIDIA Ising-Decoding clone (pulled by scripts/setup_ising.py)
 third_party/
 # Model weights, Willow data, and experiment outputs
-models/
-data/
-outputs/
+# (root-anchored: results/*/models/ holds fitted noise models, which are results)
+/models/
+/data/
+/outputs/
 # uv virtualenv
 .venv/
 # Working docs (only README.md is ever committed)
@@ -232,5 +233,7 @@ claude.md
 log.md
 # Raw Google Willow dataset snapshot (12G, pulled from Zenodo/HF, not source)
 google_105Q_surface_code_d3_d5_d7/
+# HF download cache a job dumped inside its output dir (2.2G, re-downloadable)
+results/*/hf_cache/
 # JetBrains project files
 .idea/

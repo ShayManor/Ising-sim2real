@@ -1,0 +1,5 @@
+distance,basis,orientation,rounds,decoder,model,shots,n_errors,ler,ler_per_cycle,decode_seconds,note
+3,X,q2_7,1,ising,accurate,20000,0,nan,nan,0.0,skipped: rounds<2
+3,X,q2_7,10,ising,accurate,20000,2404,0.1202,0.013560873497095283,19.889262010110542,"R=13,rot=XV"
+3,X,q2_7,13,ising,accurate,20000,3594,0.1797,0.016838772210853226,25.997897644061595,"R=13,rot=XV"
+3,X,q2_7,30,ising,accurate,20000,5027,0.25135,0.01150819053073443,61.85252305096947,"R=13,rot=XV"

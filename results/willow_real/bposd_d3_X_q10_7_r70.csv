@@ -1,0 +1,2 @@
+distance,basis,orientation,rounds,decoder,model,shots,n_errors,ler,ler_per_cycle,decode_seconds,note
+3,X,q10_7,70,bposd,-,10000,3435,0.3435,0.008228342907421249,860.5054859439842,

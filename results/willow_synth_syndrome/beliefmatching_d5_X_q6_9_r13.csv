@@ -1,0 +1,2 @@
+distance,basis,orientation,rounds,decoder,model,shots,n_errors,ler,ler_per_cycle,decode_seconds,note
+5,X,q6_9,13,beliefmatching,-,5000,137,0.0274,0.0021629517065682724,45.780405096011236,
